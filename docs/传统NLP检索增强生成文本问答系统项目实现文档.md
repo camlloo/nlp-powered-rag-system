@@ -1,12 +1,13 @@
-# 基于传统 NLP 与 MySQL 9 的检索增强生成文本问答系统项目实现文档
+# 基于传统 NLP 与 PostgreSQL/pgvector 的检索增强生成文本问答系统项目实现文档
 
-版本 V1.0  
+版本 V1.1  
+修订说明 相比 V1.0：业务数据与向量存储由 MySQL 9 调整为 PostgreSQL 加 pgvector 扩展；用户与权限管理改为预留设计，后期以 JWT 引入 RBAC；客户端规划为 Vue，后期实现。  
 编制日期 2026 年 11 月 6 日  
 适用对象 后端开发人员 算法开发人员 测试人员 项目评审人员
 
-本项目面向中文知识库文本问答，采用传统 NLP 完成文档解析后的清洗、分句、分词、关键词抽取、规则切块和词项检索，采用 text-embedding-v4 生成稠密向量，采用 qwen3.8-flash 基于检索证据生成带出处的回答。业务数据、文本块和向量统一持久化在 MySQL 9，不引入独立向量数据库。
+本项目面向中文知识库文本问答，采用传统 NLP 完成文档解析后的清洗、分句、分词、关键词抽取、规则切块和词项检索，采用 text-embedding-v4 生成稠密向量，采用 qwen3.8-flash 基于检索证据生成带出处的回答。业务数据、文本块和向量统一持久化在 PostgreSQL（启用 pgvector 扩展），不引入独立向量数据库。
 
-推荐先实现 MySQL 9 社区版加应用层精确向量检索的可部署版本，适合毕业设计、项目原型和经过容量验证的中小型知识库。需要数据库内原生距离计算及向量索引时，采用具备相应能力的 MySQL HeatWave 部署。本文给出开发设计、关键代码示例及验收方案；容量与性能数字属于初始目标，以实际环境测试结果为准。
+推荐先实现 PostgreSQL 加 pgvector、应用层精确向量检索的可部署版本，适合毕业设计、项目原型和经过容量验证的中小型知识库。需要数据库内原生距离计算及 ANN 向量索引时，启用 pgvector 的 HNSW 或 IVFFlat 索引，标准 PostgreSQL 扩展即可支持。本文给出开发设计、关键代码示例及验收方案；容量与性能数字属于初始目标，以实际环境测试结果为准。
 
 ## 1 项目目标与范围
 
@@ -14,18 +15,20 @@
 
 系统允许管理员上传企业制度、产品手册、技术资料等文件，自动建立可追溯的知识索引。用户以自然语言提问，系统检索相关原文，将有限的证据交给 qwen3.8-flash，返回答案、引用位置和处理状态。对于资料未覆盖的问题，系统应明确告知证据不足。
 
-系统重点实现五项能力：可解释的传统 NLP 处理流水线；关键词与语义双路召回；MySQL 统一数据管理；答案与原文绑定；文档更新、权限隔离和失败恢复。
+系统重点实现五项能力：可解释的传统 NLP 处理流水线；关键词与语义双路召回；PostgreSQL 统一数据管理；答案与原文绑定；文档更新、删除失效和失败恢复。权限隔离以预留字段与授权校验点形式保留，后期以 JWT RBAC 实现。
 
 ### 1.2 功能范围
 
 | 模块 | 首期功能 | 输出或约束 |
 | --- | --- | --- |
-| 知识库管理 | 创建、修改、授权、停用知识库 | 首期每个请求选择一个知识库 |
+| 知识库管理 | 创建、修改、停用知识库；成员授权预留 | 首期每个请求选择一个知识库 |
 | 文件管理 | 上传、预览、版本更新、删除 | TXT、Markdown、DOCX、文本型 PDF |
 | 索引构建 | 解析、NLP 处理、切块、向量化、发布 | 异步任务、进度、失败重试 |
 | 检索调试 | 查询词、BM25、向量召回、融合结果 | 仅管理员可见诊断详情 |
 | 文本问答 | 单轮问答、有限轮次追问、来源引用 | 所有事实答案必须有证据 |
 | 质量管理 | 问答反馈、评测集、指标统计 | 记录索引和模型配置版本 |
+
+用户账号与权限管理首期不实现：数据模型预留 tenant_id、user_id 与成员角色表，接口层预留统一授权校验点，后期以 JWT 引入 RBAC。前端采用 Vue，后期实现；首期以 FastAPI OpenAPI 文档调试接口。
 
 扫描 PDF、复杂跨页表格、图片内容理解、语音问答、模型训练和智能体工具执行不进入首期。无文本层或乱码严重的文件返回可解释的处理失败状态。扫描件后续如需接入，单独建设 OCR 流程并评估文字准确率；不默认将 OCR 归入纯传统 NLP 流程。
 
@@ -42,51 +45,51 @@ text-embedding-v4 属于神经网络向量模型，qwen3.8-flash 属于生成模
 | 层次 | 推荐技术 | 选择依据 |
 | --- | --- | --- |
 | 服务端 | Python 3.11 或 3.12、FastAPI、Pydantic | 便于实现 NLP 流程和异步接口 |
-| 数据访问 | SQLAlchemy 2、PyMySQL、Alembic | 事务、迁移、连接池和参数化 SQL |
-| 数据存储 | MySQL 9.x、InnoDB、utf8mb4 | 统一存储业务记录与向量 |
+| 数据访问 | SQLAlchemy 2、psycopg 3、pgvector Python 绑定、Alembic | 事务、迁移、连接池、参数化 SQL 与向量类型映射 |
+| 数据存储 | PostgreSQL 16/17、pgvector、UTF8 | 统一存储业务记录与向量 |
 | 文档解析 | python-docx、pypdf、BeautifulSoup | 按文件结构抽取正文及来源 |
 | 传统 NLP | jieba、正则表达式、rank-bm25 | 词典分词、规则抽取、词项评分 |
 | 数值计算 | NumPy | float32 矩阵与余弦相似度 |
 | 模型调用 | OpenAI 兼容 SDK | 接入百炼 Embeddings 和 Chat API |
-| 后台任务 | 独立 Python worker、MySQL 任务表 | 首期减少基础设施依赖 |
-| 客户端 | 现有 Web 客户端或轻量管理页面 | 调用上传、检索与问答接口 |
+| 后台任务 | 独立 Python worker、PostgreSQL 任务表 | 首期减少基础设施依赖 |
+| 客户端 | Vue 3（后期实现） | 首期以 OpenAPI 文档调试上传、检索与问答接口 |
 
-依赖在集成测试通过后锁定完整版本和哈希。MySQL 必须固定小版本和镜像摘要，禁止生产环境随 mysql:9 浮动升级。日期、时间统一以 UTC 存储，面向用户按业务时区显示。
+依赖在集成测试通过后锁定完整版本和哈希。PostgreSQL 必须固定小版本、pgvector 扩展版本和镜像摘要，禁止生产环境随浮动标签升级。日期、时间统一以 timestamptz 按 UTC 存储，面向用户按业务时区显示。
 
-### 2.2 MySQL 9 向量能力说明
+### 2.2 PostgreSQL 与 pgvector 能力说明
 
-MySQL 9 提供 VECTOR 数据类型，能够保存浮点向量。VECTOR 列不能按普通 B-tree 键的方式建立主键、外键或唯一键。原生 DISTANCE 函数的可用性受产品发行版限制，官方当前手册说明其适用于 MySQL HeatWave on OCI 和 MySQL AI，不包含在普通社区版及普通商业发行版中。[1][2]
+PostgreSQL 通过开源扩展 pgvector 提供 vector 数据类型、距离算子与 ANN 索引，普通 PostgreSQL 实例安装扩展即可使用，不存在发行版限制。[1] vector 类型最多保存 16000 维；HNSW 与 IVFFlat 索引支持到 2000 维，本项目 1024 维可直接建索引。距离算子包括 `<->`（L2 距离）、`<=>`（余弦距离）与 `<#>`（负内积），归一化向量的余弦距离等于 1 减余弦相似度。vector 列不能按普通 B-tree 键的方式建立主键、外键或唯一键。
 
 | 部署路径 | 向量持久化 | 相似度计算 | 索引能力与适用条件 |
 | --- | --- | --- | --- |
-| A 社区版基础方案 | MySQL VECTOR 列 | 应用层 NumPy 精确计算 | 无原生 ANN 假设，先做容量验证 |
-| B HeatWave 增强方案 | MySQL VECTOR 列 | 数据库 DISTANCE | 按服务能力加载表并验证向量索引 |
+| A 应用层精确方案 | vector(1024) 列 | 应用层 NumPy 精确计算 | 无 ANN 依赖，先做容量验证，首期默认 |
+| B pgvector 索引方案 | vector(1024) 列加 HNSW/IVFFlat | 数据库内距离算子 | 标准扩展即可用，按容量与延迟需求启用 |
 
-两条路径都满足“业务库与向量存储使用 MySQL 9”。如果验收要求向量搜索本身也必须在数据库内执行，则选择路径 B。普通社区版加应用层计算属于向量存储与检索服务组合，不等同于具备原生 ANN 索引的向量数据库。
+两条路径都满足“业务库与向量存储使用同一 PostgreSQL”。如果验收要求向量搜索本身也必须在数据库内执行，则选择路径 B。HNSW 与 IVFFlat 属于近似索引，召回率随参数变化，启用后必须与精确检索对比验证 Recall。
 
-HeatWave 官方文档说明，从 MySQL 9.5.0 起可为频繁查询的 VECTOR 列自动创建包括 HNSW 在内的向量索引。[3] 这项能力不应写成社区版通用的 CREATE VECTOR INDEX 语法。B 路径必须在目标服务中验证表加载、执行计划、权限过滤和索引实际使用情况。
+B 路径必须在目标库验证扩展版本、索引创建参数、EXPLAIN 执行计划是否实际使用索引，以及过滤条件与 ANN 检索的组合行为。
 
-本文 SQL 以固定且通过兼容性测试的 MySQL 9.x 环境为目标；引用的在线手册可能随版本更新。上线前运行 SELECT VERSION(), @@version_comment，确认 VECTOR、转换函数、FULLTEXT ngram 和备份恢复能力。B 路径额外探测 DISTANCE。A 路径不以 DISTANCE 可用作为启动条件。
+本文 SQL 以固定且通过兼容性测试的 PostgreSQL 16 或 17 加 pgvector 环境为目标；引用的在线手册可能随版本更新。上线前运行 SELECT version(); 与 SELECT extversion FROM pg_extension WHERE extname = 'vector';，确认 vector 类型、距离算子和备份恢复能力。B 路径额外用 EXPLAIN 验证索引使用。A 路径不以 ANN 索引存在作为启动条件。
 
 ### 2.3 模型配置
 
-向量模型固定为 text-embedding-v4，默认维度设为 1024。官方兼容接口列出 64、128、256、512、768、1024、1536、2048 八种维度，单次最多 10 条文本，每条最多 8192 tokens。[5] 项目不依赖最大输入长度开展切块，实际文本块应明显小于模型上限。
+向量模型固定为 text-embedding-v4，默认维度设为 1024。官方兼容接口列出 64、128、256、512、768、1024、1536、2048 八种维度，单次最多 10 条文本，每条最多 8192 tokens。[4] 项目不依赖最大输入长度开展切块，实际文本块应明显小于模型上限。
 
-问答模型 ID 使用 qwen3.8-flash，按百炼官方模型列表及 Chat Completions 接口接入。[6][7] 地域、业务空间、权限、限流和收费以目标账号配置为准。不得将 API Key 与其他地域服务地址混用，也不得未经配置变更静默替换模型。
+问答模型 ID 使用 qwen3.8-flash，按百炼官方模型列表及 Chat Completions 接口接入。[5][6] 地域、业务空间、权限、限流和收费以目标账号配置为准。不得将 API Key 与其他地域服务地址混用，也不得未经配置变更静默替换模型。
 
 ## 3 总体架构
 
 ### 3.1 分层设计
 
-系统由接口层、业务编排层、传统 NLP 层、检索层、模型网关和数据层组成。接口层负责认证和参数校验；业务编排层管理文件及任务状态；NLP 层输出可追溯文本块；检索层按同一已发布索引完成双路召回；模型网关控制重试、限流和调用记录；MySQL 保存所有权威索引数据。
+系统由接口层、业务编排层、传统 NLP 层、检索层、模型网关和数据层组成。接口层负责认证和参数校验；业务编排层管理文件及任务状态；NLP 层输出可追溯文本块；检索层按同一已发布索引完成双路召回；模型网关控制重试、限流和调用记录；PostgreSQL 保存所有权威索引数据。
 
 ```text
 管理员上传文件
-  -> 文件校验与版本登记 -> MySQL 任务表
+  -> 文件校验与版本登记 -> 数据库任务表
   -> worker 解析与传统 NLP 处理
   -> 规则切块与关键词抽取
   -> text-embedding-v4
-  -> MySQL 文本块与 VECTOR 存储 -> 原子发布索引
+  -> PostgreSQL 文本块与 vector 存储 -> 原子发布索引
 
 用户问题
   -> 认证与知识库授权 -> 规则化问题
@@ -97,15 +100,15 @@ HeatWave 官方文档说明，从 MySQL 9.5.0 起可为频繁查询的 VECTOR �
 
 ### 3.2 数据与缓存边界
 
-原始文件保存在受访问控制的文件目录或对象存储中，MySQL 保存路径、摘要与元数据。数据库和向量持久化均使用 MySQL；文件存储不承担向量检索。若部署要求所有内容均进入 MySQL，可增加文件 BLOB 表，同时评估备份体积和大包传输限制。
+原始文件保存在受访问控制的文件目录或对象存储中，数据库保存路径、摘要与元数据。数据库和向量持久化均使用 PostgreSQL；文件存储不承担向量检索。若部署要求所有内容均进入数据库，可增加 bytea 文件表，同时评估备份体积和大包传输限制。
 
-路径 A 可在应用内缓存一个已发布索引的分词结果、BM25 统计及 float32 向量矩阵。缓存是可重建的运行时副本，MySQL 是唯一持久化来源，不使用 FAISS、Milvus、Chroma 或其他持久化向量索引。每个应用进程独立计入缓存内存。
+路径 A 可在应用内缓存一个已发布索引的分词结果、BM25 统计及 float32 向量矩阵。缓存是可重建的运行时副本，PostgreSQL 是唯一持久化来源，不使用 FAISS、Milvus、Chroma 或其他持久化向量索引。每个应用进程独立计入缓存内存。
 
 ### 3.3 一次问答的处理顺序
 
-接口从已验证身份取得 tenant_id 和 user_id，校验 kb_id 的成员权限，然后读取 active_index_id、data_revision 与 acl_revision。检索使用该索引快照。问题经过规则处理后分别进入 BM25 与向量通道，融合后按证据预算选择文本块。没有合格证据时直接返回 insufficient_evidence，不调用生成模型。
+首期从应用凭证解析预置的 tenant_id 和 user_id；成员权限校验是预留授权点，首期仅校验知识库存在且未停用，然后读取 active_index_id、data_revision 与 acl_revision。检索使用该索引快照。问题经过规则处理后分别进入 BM25 与向量通道，融合后按证据预算选择文本块。没有合格证据时直接返回 insufficient_evidence，不调用生成模型。
 
-回答完成后再次校验知识库权限、文档删除状态和相关修订号；如发生变化，重新检索或返回需要重试的状态，禁止输出已经撤权的内容。首期采用完整答案校验后返回的方式；流式输出作为后续功能，避免先流出再发现引用无效。
+回答完成后再次校验知识库有效性、文档删除状态和相关修订号；如发生变化，重新检索或返回需要重试的状态。后期启用 RBAC 后，此处同样复核成员授权，禁止输出已撤权内容。首期采用完整答案校验后返回的方式；流式输出作为后续功能，避免先流出再发现引用无效。
 
 ## 4 传统 NLP 文档处理流程
 
@@ -170,12 +173,12 @@ DOCX 按文档 XML 中段落和表格的真实顺序遍历，不能简单地先�
 | 表 | 作用 | 主要关联 |
 | --- | --- | --- |
 | kb_collection | 知识库、当前索引和修订号 | tenant_id、active_index_id |
-| kb_member | 知识库成员与角色 | 知识库与用户 |
+| kb_member | 知识库成员与角色（预留，后期 RBAC 启用） | 知识库与用户 |
 | kb_document | 文档逻辑身份与删除状态 | 知识库与当前文件版本 |
 | kb_document_version | 不可变文件版本 | 文件摘要、路径、解析状态 |
 | kb_index | 一次完整索引快照 | 模型、维度、流水线和构建状态 |
 | kb_chunk | 快照内的文本块 | 索引、文档版本、原文位置 |
-| kb_embedding | 文本块的稠密向量 | chunk_id 与 VECTOR 列 |
+| kb_embedding | 文本块的稠密向量 | chunk_id 与 vector 列 |
 | ingest_job | 后台任务与租约 | 阶段、重试、心跳、错误码 |
 
 问答审计可另建 qa_request、qa_citation、qa_feedback 三表。审计保存 request_id、用户与知识库、索引版本、检索命中、引用、模型配置、token 用量及耗时；敏感正文按需脱敏，不默认把原始文件和密钥写入日志。
@@ -188,19 +191,19 @@ kb_index 表示一个知识库完整可检索快照，而非某一个文件。�
 
 文档解析或向量化失败时，新快照不替换现有索引。新文件不会以半完成状态参与检索；旧索引继续服务。对明确需要停用的文件先做逻辑删除，不依赖新索引构建成功才停止检索。
 
-### 5.3 权限与删除
+### 5.3 权限预留与删除
 
-首期权限粒度为知识库，角色为 owner、editor、viewer。知识库内所有文档继承该权限，不支持另设文档级保密范围。tenant_id 和 user_id 从认证上下文取得，不能信任请求体中的同名字段。管理员也必须经过服务端授权判断。
+首期不实现独立用户体系与 RBAC：数据模型预留 tenant_id、user_id 和 kb_member 角色表，接口层预留统一授权校验点（框架依赖形式），tenant_id 和 user_id 从服务端凭证解析，不信任请求体中的同名字段。后期以 JWT 引入 RBAC 时，在授权校验点内实现 owner、editor、viewer 角色判断，业务模块不改动；知识库内所有文档继承知识库权限，不支持另设文档级保密范围。
 
-删除文件时，在同一事务中写 deleted_at 并递增 data_revision；授权变化递增 acl_revision。所有缓存键包含 tenant_id、kb_id、index_id、data_revision、acl_revision。每次回答输出前重新检查这些值，旧缓存不得绕过删除或撤权。原文下载和引用查看接口进行同样授权。
+删除文件时，在同一事务中写 deleted_at 并递增 data_revision；授权变化递增 acl_revision 的机制保留为预留。所有缓存键包含 tenant_id、kb_id、index_id、data_revision、acl_revision 五要素，保证后期启用权限时缓存体系不需重构。每次回答输出前重新检查这些值，旧缓存不得绕过删除或撤权。原文下载和引用查看接口预留同样的授权点。
 
 物理删除按保留策略异步完成，范围包括文件、旧快照、向量、临时文件和问答中缓存的摘录。删除文件不会自动消除备份中的历史数据，需按备份保留期管理。上线前执行恢复演练。
 
 ### 5.4 关键数据库约束
 
-字符集统一 utf8mb4，正文 TEXT 或 MEDIUMTEXT，模型及版本字段使用区分大小写的 ASCII 标识。索引包括知识库租户键、文档文件版本唯一键、快照中文档块序号唯一键，以及按知识库和状态查任务的组合索引。
+数据库统一 UTF8 编码，正文使用 TEXT，模型及版本字段使用区分大小写的 ASCII 标识。索引包括知识库租户键、文档文件版本唯一键、快照中文档块序号唯一键，以及按知识库和状态查任务的组合索引。
 
-所有跨表关联带 kb_id，防止将另一知识库的文件块误挂到当前索引；授权查询同时限定 tenant_id。VECTOR 的输入与读取统一使用 STRING_TO_VECTOR 和 VECTOR_TO_STRING，避免依赖未验证的驱动二进制适配。缓存装载时再转为 float32；不得自行假设服务端字节序。
+所有跨表关联带 kb_id，防止将另一知识库的文件块误挂到当前索引；授权查询同时限定 tenant_id。vector 的输入与读取统一通过 pgvector 官方 Python 绑定或文本字面量加 ::vector 转换，不在应用层拼装二进制。缓存装载时再转为 float32。
 
 ## 6 向量化与模型网关
 
@@ -228,14 +231,14 @@ EMBEDDING_MODEL=text-embedding-v4
 EMBEDDING_DIM=1024
 CHAT_MODEL=qwen3.8-flash
 VECTOR_BACKEND=application_exact
-MYSQL_HOST=127.0.0.1
-MYSQL_PORT=3306
-MYSQL_DATABASE=nlp_rag
-MYSQL_USER=rag_app
-MYSQL_PASSWORD=replace_with_secret
+PG_HOST=127.0.0.1
+PG_PORT=5432
+PG_DATABASE=nlp_rag
+PG_USER=rag_app
+PG_PASSWORD=replace_with_secret
 ```
 
-实际运行时从密钥管理服务或未纳入版本控制的环境配置注入凭证。若使用其他地域，完整替换 MODEL_BASE_URL 并匹配对应 API Key。[5][7]
+实际运行时从密钥管理服务或未纳入版本控制的环境配置注入凭证。若使用其他地域，完整替换 MODEL_BASE_URL 并匹配对应 API Key。[4][6]
 
 ## 7 双路召回与融合重排
 
@@ -247,17 +250,17 @@ MYSQL_PASSWORD=replace_with_secret
 
 ### 7.2 BM25 词项召回
 
-路径 A 在加载已发布索引时，根据 tokens 建立 BM25 内存结构，统计范围为该知识库完整快照，参数初值 k1=1.5、b=0.75。数据来源全部为 MySQL，缓存可随时重建。按确定性次序取 Top 50，同分按 chunk_id 排序。
+路径 A 在加载已发布索引时，根据 tokens 建立 BM25 内存结构，统计范围为该知识库完整快照，参数初值 k1=1.5、b=0.75。数据来源全部为 PostgreSQL，缓存可随时重建。按确定性次序取 Top 50，同分按 chunk_id 排序。
 
 BM25 计算使用词频 tf、文档频率 df、块总数 N、当前块长度 dl 和平均长度 avgdl。评分可写为 IDF(t) 乘以 tf(t,d)×(k1+1) 除以 tf(t,d)+k1×(1-b+b×dl/avgdl)，再对查询词累加。IDF 采用 log(1+(N-df+0.5)/(df+0.5)) 或所选库明确定义的实现，评测中固定实现，不混用不同 IDF 结果。
 
-MySQL FULLTEXT WITH PARSER ngram 可作为冷启动、降级或后续大规模候选过滤方案。ngram 默认按连续字符切分，通常配置 ngram_token_size=2；其行为不等同于 jieba 中文分词，MATCH AGAINST 的分值也不能直接称为本项目 BM25 分值。[4] 修改 ngram 参数或停用词配置后需按目标版本要求重建全文索引。
+PostgreSQL 原生全文检索对中文依赖第三方分词扩展，如 pg_jieba 或 zhparser。[3] 首期不引入数据库内中文全文检索，词项召回由应用层 BM25 统一承担，避免出现两套词项口径；后续如需数据库内候选过滤，再评估扩展能力并单独评测。
 
 ### 7.3 语义向量召回
 
 路径 A 对授权知识库当前快照内所有有效向量做精确相似度计算，先独立取 Top 50，再与 BM25 结果融合。不能先用 BM25 限定 200 条再计算向量，却宣称完成了独立全库语义召回；这种优化可能漏掉无共同词语的相关答案。
 
-向量矩阵以 float32 常驻缓存，分批装载或计算；超出内存预算的知识库不允许静默截断。可以转入有明确延迟上限的分块全量扫描，或采用 B 路径。MySQL 仅存向量并不会自动降低精确搜索的 O(Nd) 计算量。
+向量矩阵以 float32 常驻缓存，分批装载或计算；超出内存预算的知识库不允许静默截断。可以转入有明确延迟上限的分块全量扫描，或采用 B 路径。PostgreSQL 仅存向量并不会自动降低精确搜索的 O(Nd) 计算量。
 
 ### 7.4 融合与传统重排
 
@@ -297,7 +300,7 @@ RRF 分值不能直接当作“答案可信度”。建立含可回答、不可�
 
 ### 8.3 调用与输出校验
 
-默认关闭思考模式，以控制面向文档问答的延迟和成本；显式配置 enable_thinking=False。若后续开启思考及其历史保留功能，必须遵守目标模型关于 reasoning_content 的协议要求，不能把思考内容混入正文引用。[7]
+默认关闭思考模式，以控制面向文档问答的延迟和成本；显式配置 enable_thinking=False。若后续开启思考及其历史保留功能，必须遵守目标模型关于 reasoning_content 的协议要求，不能把思考内容混入正文引用。[6]
 
 非流式完成后校验状态、输出是否被长度上限截断、引用编号是否存在，以及回答是否包含必要引用。无效引用或完整性不足时最多重新生成一次；仍失败则返回 answer_validation_failed，并展示合法来源供用户查看。模型接口的请求成功不等于答案事实正确。
 
@@ -323,7 +326,7 @@ app/
 tests/
   fixtures/        # 文档与标准问题
   unit/            # NLP 规则、融合、向量校验
-  integration/     # MySQL、任务、模型协议
+  integration/     # 数据库、任务、模型协议
   evaluation/      # 检索及答案质量评测
 ```
 
@@ -332,13 +335,13 @@ tests/
 | 方法 | 路径 | 功能与主要响应 |
 | --- | --- | --- |
 | POST | /api/v1/kbs | 创建知识库，返回 kb_id |
-| POST | /api/v1/kbs/{id}/members | 管理成员，更新 acl_revision |
+| POST | /api/v1/kbs/{id}/members | 管理成员，更新 acl_revision（预留接口，后期 RBAC 实现） |
 | POST | /api/v1/kbs/{id}/documents | multipart 上传，返回 202 与 job_id |
 | GET | /api/v1/jobs/{id} | 任务状态、阶段、进度、错误码 |
 | GET | /api/v1/kbs/{id}/documents | 已授权文档及其处理状态 |
 | DELETE | /api/v1/documents/{id} | 逻辑删除并触发索引更新 |
 | POST | /api/v1/kbs/{id}/reindex | 创建重建任务，返回 202 |
-| POST | /api/v1/retrieval/debug | 查看召回和融合，需 editor 权限 |
+| POST | /api/v1/retrieval/debug | 查看召回和融合，首期限管理凭证 |
 | POST | /api/v1/qa | 问题、可选历史、答案及引用 |
 | GET | /api/v1/citations/{id} | 授权后查看原文摘录与定位 |
 | POST | /api/v1/feedback | 记录有帮助、无帮助及原因 |
@@ -507,7 +510,7 @@ async def generate_answer(question, evidence, system_prompt):
 
 所有外部 SQL 输入使用参数绑定；动态表名和排序字段使用服务端允许列表。文件接口检查路径归属，禁止目录穿越。富文本或 Markdown 在客户端展示前转义并过滤危险链接，不允许资料中的脚本执行。
 
-服务使用 TLS，MySQL 账号按应用读写、迁移和备份分权。生产环境禁用调试堆栈。API Key 不进入客户端、数据库普通配置表或日志。上传限制、任务配额、并发限流和模型预算共同防止资源耗尽。
+服务使用 TLS，PostgreSQL 账号按应用读写、迁移和扩展安装分权，CREATE EXTENSION 仅由迁移角色在受控会话执行。生产环境禁用调试堆栈。API Key 不进入客户端、数据库普通配置表或日志。上传限制、任务配额、并发限流和模型预算共同防止资源耗尽。
 
 发送给外部模型的数据仅限本次授权范围内的必要文本。组织部署时明确数据出境、模型服务数据处理政策及敏感字段处理要求。敏感知识库可以停用外部调用；在指定远程模型不可使用时，应报告功能限制，不擅自更换模型。
 
@@ -517,15 +520,15 @@ async def generate_answer(question, evidence, system_prompt):
 
 ### 12.1 基础部署拓扑
 
-开发环境为一个 API 进程、一个 worker 进程和一个 MySQL 9 实例。参考资源为 API 与 worker 合计 4 核 8 GiB，数据库 4 核 8 GiB、SSD 存储；这是起始配置建议，不是容量保证。模型通过外部服务调用，本地无需部署推理 GPU。
+开发环境为一个 API 进程、一个 worker 进程和一个 PostgreSQL 实例（启用 pgvector 扩展）。参考资源为 API 与 worker 合计 4 核 8 GiB，数据库 4 核 8 GiB、SSD 存储；这是起始配置建议，不是容量保证。模型通过外部服务调用，本地无需部署推理 GPU。
 
 生产环境分别运行 API、worker 和数据库；原始文件使用受控持久卷或对象存储。多 API 进程会复制内存索引，必须预算总占用。限制同时构建的知识库数量，避免新旧快照和多个 worker 同时占满内存。
 
 ### 12.2 上线步骤
 
-1. 固定 MySQL 小版本、Python 依赖和部署镜像摘要，记录配置指纹。
-2. 初始化数据库与应用账号，设置 utf8mb4、时区、连接池及备份策略。
-3. 执行 Alembic 迁移，验证 VECTOR 转换、FULLTEXT 与事务行为。
+1. 固定 PostgreSQL 与 pgvector 版本、Python 依赖和部署镜像摘要，记录配置指纹。
+2. 初始化数据库与应用账号，设置 UTF8 编码、UTC 时区、连接池及备份策略。
+3. 执行 Alembic 迁移，安装并验证 pgvector 扩展、vector 读写与事务行为。
 4. 配置业务空间、地域地址和模型密钥，以非敏感短文本完成模型连通性测试。
 5. 启动 API 和 worker，配置 readiness 与 liveness 探针。
 6. 导入标准样本，构建索引，验证问答、引用、权限和删除。
@@ -535,9 +538,9 @@ readiness 检查数据库及必要索引状态，不能每次探针都调用付�
 
 ### 12.3 备份与恢复
 
-数据库备份同时覆盖业务表、原始向量、索引元数据、审计关联及任务状态；原文件独立备份，二者通过文件哈希和版本清单核对。向量列及转换函数需使用目标备份工具做真实往返恢复测试。
+数据库备份同时覆盖业务表、原始向量、索引元数据、审计关联及任务状态；原文件独立备份，二者通过文件哈希和版本清单核对。含 vector 列的库需使用 pg_dump 或物理基础备份做真实往返恢复测试。
 
-建议初始恢复目标 RPO 24 小时、RTO 4 小时，作为业务确认及演练目标。使用 binlog 的环境可缩短 RPO。恢复后从 MySQL 重建 BM25 与向量缓存，校验 active_index_id 完整性后恢复服务；过期任务按租约与幂等规则处理。
+建议初始恢复目标 RPO 24 小时、RTO 4 小时，作为业务确认及演练目标。启用 WAL 归档的环境可缩短 RPO。恢复后从 PostgreSQL 重建 BM25 与向量缓存，校验 active_index_id 完整性后恢复服务；过期任务按租约与幂等规则处理。
 
 ## 13 性能容量与费用估算
 
@@ -565,7 +568,7 @@ readiness 检查数据库及必要索引状态，不能每次探针都调用付�
 
 一次导入的向量费用约为“实际送入向量接口的 tokens ÷ 100 万 × 向量模型每百万输入 token 单价”；文本重叠、标题前缀和失败重试会增加 tokens。一次问答成本为问题向量费用，加上生成模型输入及输出 token 费用。索引缓存命中可减少重复导入费用。
 
-以控制台目标地域、模型版本及合同报价为准，不在设计中固定可能变化的价格。记录模型响应 usage，按日统计实际花费；若服务启用了额外思考或缓存计费，分别计入。数据库、文件存储、备份及 HeatWave 服务费用单独核算。
+以控制台目标地域、模型版本及合同报价为准，不在设计中固定可能变化的价格。记录模型响应 usage，按日统计实际花费；若服务启用了额外思考或缓存计费，分别计入。数据库、文件存储与备份费用单独核算。
 
 ## 14 测试设计与验收标准
 
@@ -596,7 +599,7 @@ readiness 检查数据库及必要索引状态，不能每次探针都调用付�
 3. 检索：完全词匹配、无共同词语的语义相关问法、短词、型号和版本冲突。
 4. 模型协议：向量批量乱序、缺项、维度不符、NaN、零向量、429 和超时。
 5. 一致性：构建中更新文件、并发发布、worker 崩溃、租约过期、重复上传与重建。
-6. 权限：跨租户 ID 猜测、缓存复用、查询过程中撤权、删除后旧引用访问。
+6. 权限：跨租户 ID 猜测、缓存复用、查询过程中撤权、删除后旧引用访问；其中撤权与角色相关场景随后期 RBAC 启用执行，删除与缓存失效场景首期必须覆盖。
 7. 生成：资料注入、伪造引用、无引用、输出截断、无证据和资料矛盾。
 8. 运维：冷启动、缓存超额、数据库故障、旧索引保留、备份恢复与配置回滚。
 
@@ -610,7 +613,7 @@ readiness 检查数据库及必要索引状态，不能每次探针都调用付�
 
 | 阶段 | 参考周期 | 可验收交付 |
 | --- | --- | --- |
-| 需求与环境验证 | 第 1 周 | 数据样本、范围、模型连通、MySQL 能力验证 |
+| 需求与环境验证 | 第 1 周 | 数据样本、范围、模型连通、PostgreSQL 与 pgvector 能力验证 |
 | 文档与索引流水线 | 第 2 周 | 解析、传统 NLP、版本表、异步任务、向量入库 |
 | 检索与问答 | 第 3 周 | BM25、精确向量召回、RRF、生成与引用 |
 | 质量与发布 | 第 4 周 | 权限、故障恢复、评测报告、部署与操作说明 |
@@ -619,121 +622,119 @@ readiness 检查数据库及必要索引状态，不能每次探针都调用付�
 
 ## 附录 A 核心建表 SQL
 
-以下为核心关系与向量字段的建表基线，按顺序执行。问答审计、任务租约和幂等记录在正式项目中通过独立迁移补充。应用连接统一设置 utf8mb4。active_index_id 的同知识库归属与 ready 状态在发布事务中校验，避免循环外键依赖。
+以下为核心关系与向量字段的建表基线，按顺序执行。问答审计、任务租约和幂等记录在正式项目中通过独立迁移补充。数据库统一 UTF8 编码，时间列使用 timestamptz 并以 UTC 写入。active_index_id 的同知识库归属与 ready 状态在发布事务中校验，避免循环外键依赖。
 
 ```sql
-CREATE DATABASE IF NOT EXISTS nlp_rag
-  CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
-USE nlp_rag;
+-- 数据库与扩展由管理员角色执行一次
+CREATE DATABASE nlp_rag ENCODING 'UTF8' TEMPLATE template0;
+\c nlp_rag
+CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE TABLE kb_collection (
-  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
-  tenant_id BIGINT UNSIGNED NOT NULL,
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  tenant_id BIGINT NOT NULL,
   name VARCHAR(200) NOT NULL,
-  active_index_id BIGINT UNSIGNED NULL,
-  data_revision BIGINT UNSIGNED NOT NULL DEFAULT 0,
-  acl_revision BIGINT UNSIGNED NOT NULL DEFAULT 0,
-  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
-  KEY idx_kb_tenant (tenant_id, id)
-) ENGINE=InnoDB;
+  active_index_id BIGINT NULL,
+  data_revision BIGINT NOT NULL DEFAULT 0,
+  acl_revision BIGINT NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_kb_tenant ON kb_collection (tenant_id, id);
 
+-- 预留表：后期以 JWT RBAC 启用成员管理，首期只建表不做业务校验
 CREATE TABLE kb_member (
-  kb_id BIGINT UNSIGNED NOT NULL,
-  user_id BIGINT UNSIGNED NOT NULL,
-  role ENUM('owner','editor','viewer') NOT NULL,
-  PRIMARY KEY (kb_id, user_id),
-  FOREIGN KEY (kb_id) REFERENCES kb_collection(id)
-) ENGINE=InnoDB;
+  kb_id BIGINT NOT NULL REFERENCES kb_collection(id),
+  user_id BIGINT NOT NULL,
+  role VARCHAR(16) NOT NULL CHECK (role IN ('owner','editor','viewer')),
+  PRIMARY KEY (kb_id, user_id)
+);
 
 CREATE TABLE kb_document (
-  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
-  kb_id BIGINT UNSIGNED NOT NULL,
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  kb_id BIGINT NOT NULL REFERENCES kb_collection(id),
   title VARCHAR(300) NOT NULL,
-  current_version_no INT UNSIGNED NOT NULL DEFAULT 1,
-  deleted_at DATETIME(6) NULL,
-  UNIQUE KEY uk_doc_kb (kb_id, id),
-  FOREIGN KEY (kb_id) REFERENCES kb_collection(id)
-) ENGINE=InnoDB;
+  current_version_no INTEGER NOT NULL DEFAULT 1,
+  deleted_at TIMESTAMPTZ NULL,
+  UNIQUE (kb_id, id)
+);
 
 CREATE TABLE kb_document_version (
-  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
-  kb_id BIGINT UNSIGNED NOT NULL,
-  document_id BIGINT UNSIGNED NOT NULL,
-  version_no INT UNSIGNED NOT NULL,
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  kb_id BIGINT NOT NULL,
+  document_id BIGINT NOT NULL,
+  version_no INTEGER NOT NULL,
   title VARCHAR(300) NOT NULL,
-  file_sha256 BINARY(32) NOT NULL,
+  file_sha256 BYTEA NOT NULL,
   storage_uri VARCHAR(1000) NOT NULL,
   parse_status VARCHAR(32) NOT NULL DEFAULT 'pending',
-  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
-  UNIQUE KEY uk_file_version (document_id, version_no),
-  UNIQUE KEY uk_version_scope (kb_id, document_id, id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (document_id, version_no),
+  UNIQUE (kb_id, document_id, id),
   FOREIGN KEY (kb_id, document_id)
     REFERENCES kb_document(kb_id, id)
-) ENGINE=InnoDB;
+);
 
 CREATE TABLE kb_index (
-  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
-  kb_id BIGINT UNSIGNED NOT NULL,
-  source_revision BIGINT UNSIGNED NOT NULL,
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  kb_id BIGINT NOT NULL REFERENCES kb_collection(id),
+  source_revision BIGINT NOT NULL,
   status VARCHAR(32) NOT NULL DEFAULT 'building',
-  embedding_model VARCHAR(80) CHARACTER SET ascii
-    COLLATE ascii_bin NOT NULL,
-  embedding_dim SMALLINT UNSIGNED NOT NULL,
+  embedding_model VARCHAR(80) NOT NULL,
+  embedding_dim SMALLINT NOT NULL,
   pipeline_version VARCHAR(80) NOT NULL,
-  config_json JSON NOT NULL,
-  manifest_json JSON NOT NULL,
-  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
-  UNIQUE KEY uk_index_scope (kb_id, id),
-  KEY idx_index_state (kb_id, status, id),
-  FOREIGN KEY (kb_id) REFERENCES kb_collection(id),
+  config_json JSONB NOT NULL,
+  manifest_json JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (kb_id, id),
   CHECK (embedding_dim = 1024)
-) ENGINE=InnoDB;
+);
+CREATE INDEX idx_index_state ON kb_index (kb_id, status, id);
 
 CREATE TABLE kb_chunk (
-  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
-  kb_id BIGINT UNSIGNED NOT NULL,
-  index_id BIGINT UNSIGNED NOT NULL,
-  document_id BIGINT UNSIGNED NOT NULL,
-  doc_version_id BIGINT UNSIGNED NOT NULL,
-  chunk_no INT UNSIGNED NOT NULL,
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  kb_id BIGINT NOT NULL,
+  index_id BIGINT NOT NULL,
+  document_id BIGINT NOT NULL,
+  doc_version_id BIGINT NOT NULL,
+  chunk_no INTEGER NOT NULL,
   title_path VARCHAR(1000) NOT NULL,
-  content MEDIUMTEXT NOT NULL,
-  search_text MEDIUMTEXT NOT NULL,
-  embedding_input MEDIUMTEXT NOT NULL,
-  input_sha256 BINARY(32) NOT NULL,
-  tokens JSON NOT NULL,
-  keywords JSON NOT NULL,
-  source_locator JSON NOT NULL,
-  UNIQUE KEY uk_chunk_order (index_id, doc_version_id, chunk_no),
-  KEY idx_chunk_scope (kb_id, index_id, id),
-  FULLTEXT KEY ft_chunk_text (search_text) WITH PARSER ngram,
+  content TEXT NOT NULL,
+  search_text TEXT NOT NULL,
+  embedding_input TEXT NOT NULL,
+  input_sha256 BYTEA NOT NULL,
+  tokens JSONB NOT NULL,
+  keywords JSONB NOT NULL,
+  source_locator JSONB NOT NULL,
+  UNIQUE (index_id, doc_version_id, chunk_no),
   FOREIGN KEY (kb_id, index_id)
     REFERENCES kb_index(kb_id, id),
   FOREIGN KEY (kb_id, document_id, doc_version_id)
     REFERENCES kb_document_version(kb_id, document_id, id)
-) ENGINE=InnoDB;
+);
+CREATE INDEX idx_chunk_scope ON kb_chunk (kb_id, index_id, id);
+-- 可选扩展：启用 pg_jieba/zhparser 后可增加 tsvector 生成列与 GIN 索引做数据库内词项检索，首期不建
 
 CREATE TABLE kb_embedding (
-  chunk_id BIGINT UNSIGNED PRIMARY KEY,
-  embedding VECTOR(1024) NOT NULL,
-  FOREIGN KEY (chunk_id) REFERENCES kb_chunk(id)
-) ENGINE=InnoDB;
+  chunk_id BIGINT PRIMARY KEY REFERENCES kb_chunk(id),
+  embedding vector(1024) NOT NULL
+);
 ```
 
-DDL 固定为 1024 维，应用必须在启动时校验 EMBEDDING_DIM=1024；改变维度应迁移到新向量表并重建索引，同时调整约束。不要只改环境变量。无 ON DELETE CASCADE，物理清理按子表到父表顺序显式执行并保留审计。
+DDL 固定为 1024 维，应用必须在启动时校验 EMBEDDING_DIM=1024；改变维度应迁移到新向量表并重建索引，同时调整约束。不要只改环境变量。HNSW/IVFFlat 向量索引属于 B 路径迁移内容，首期不创建。无 ON DELETE CASCADE，物理清理按子表到父表顺序显式执行并保留审计。
 
 ## 附录 B 向量读写与召回 SQL
 
-### B1 社区版通用读写
+### B1 应用层精确方案通用读写
 
 ```sql
--- 参数使用数据库驱动绑定，不用字符串拼接
+-- 参数使用数据库驱动绑定，不用字符串拼接；
+-- 推荐通过 pgvector 官方 Python 绑定直接传 ndarray，或传文本字面量后 ::vector 转换
 INSERT INTO kb_embedding (chunk_id, embedding)
-VALUES (:chunk_id, STRING_TO_VECTOR(:embedding_json));
+VALUES (:chunk_id, (:embedding_text)::vector);
 
--- 装载缓存前已校验用户对指定知识库的权限
+-- 装载缓存前已完成知识库有效性检查
 SELECT c.id AS chunk_id, c.content, c.tokens,
-       VECTOR_TO_STRING(e.embedding) AS embedding_json
+       e.embedding::text AS embedding_text
 FROM kb_chunk c
 JOIN kb_embedding e ON e.chunk_id = c.id
 JOIN kb_document d ON d.id = c.document_id AND d.kb_id = c.kb_id
@@ -748,57 +749,68 @@ WHERE k.tenant_id = :tenant_id
 ORDER BY c.id;
 ```
 
-装载过程使用一致性读事务或装载前后复核 revision，避免分批读取期间混入删除状态变化。只将通过校验的完整快照交换到运行时缓存，交换后旧请求仍应执行最终权限检查。大集合使用主键游标分批读取，避免超大 OFFSET。
+装载过程使用一致性读事务或装载前后复核 revision，避免分批读取期间混入删除状态变化。只将通过校验的完整快照交换到运行时缓存，交换后旧请求仍应执行最终的有效性与修订号复核（后期含权限复核）。大集合使用主键游标分批读取，避免超大 OFFSET。
 
-### B2 ngram 全文降级查询
+### B2 可选的数据库内词项检索（首期不建）
+
+词项召回统一由应用层 BM25 承担。仅当后续需要数据库内候选过滤时，再评估 pg_jieba 或 zhparser 扩展及其分词口径：
 
 ```sql
+CREATE EXTENSION IF NOT EXISTS pg_jieba;
+ALTER TABLE kb_chunk ADD COLUMN search_tsv tsvector
+  GENERATED ALWAYS AS (to_tsvector('jiebacfg', search_text)) STORED;
+CREATE INDEX ft_chunk_tsv ON kb_chunk USING gin (search_tsv);
+
 SELECT c.id,
-       MATCH(c.search_text) AGAINST
-         (:query_text IN NATURAL LANGUAGE MODE) AS lexical_score
+       ts_rank(c.search_tsv,
+               plainto_tsquery('jiebacfg', :query_text)) AS lexical_score
 FROM kb_chunk c
 JOIN kb_collection k ON k.id = c.kb_id
 JOIN kb_document d ON d.id = c.document_id AND d.kb_id = c.kb_id
-WHERE k.tenant_id = :tenant_id
-  AND k.id = :kb_id
-  AND k.active_index_id = :index_id
+WHERE k.id = :kb_id
   AND c.index_id = :index_id
   AND d.deleted_at IS NULL
-  AND MATCH(c.search_text) AGAINST
-        (:query_text IN NATURAL LANGUAGE MODE) > 0
+  AND c.search_tsv @@ plainto_tsquery('jiebacfg', :query_text)
 ORDER BY lexical_score DESC, c.id
 LIMIT 50;
 ```
 
-MATCH 的列列表必须与全文索引一致。单字查询、特殊符号和型号应增加经评测的精确匹配规则；不能假设二元 ngram 覆盖所有词项。此查询是词项降级通道，不属于语义召回。
+扩展的分词结果不等同于 jieba 口径，ts_rank 分值也不能称为本项目 BM25 分值，仅作候选过滤。单字查询、特殊符号和型号需增加经评测的精确匹配规则。启用前必须用样本对比其与 jieba 分词的差异。
 
-### B3 HeatWave 数据库内检索
+### B3 pgvector 数据库内检索
 
 ```sql
--- 仅用于已验证具备 DISTANCE 的目标服务
+-- B 路径：数据库内余弦距离检索
 SELECT c.id,
-       DISTANCE(e.embedding,
-                STRING_TO_VECTOR(:query_vector_json),
-                'COSINE') AS distance_value
-FROM kb_chunk c
-JOIN kb_embedding e ON e.chunk_id = c.id
+       e.embedding <=> (:query_text)::vector AS cosine_distance
+FROM kb_embedding e
+JOIN kb_chunk c ON c.id = e.chunk_id
 JOIN kb_collection k ON k.id = c.kb_id
+JOIN kb_index i ON i.id = c.index_id AND i.kb_id = c.kb_id
 JOIN kb_document d ON d.id = c.document_id AND d.kb_id = c.kb_id
-WHERE k.tenant_id = :tenant_id
-  AND k.id = :kb_id
+WHERE k.id = :kb_id
   AND k.active_index_id = :index_id
   AND c.index_id = :index_id
+  AND i.status = 'ready'
   AND d.deleted_at IS NULL
-ORDER BY distance_value ASC, c.id
+ORDER BY e.embedding <=> (:query_text)::vector ASC, c.id
 LIMIT 50;
 ```
 
-余弦距离越小越相关。该查询表达检索语义，不保证连接及过滤形式能利用 ANN 索引。B 路径的部署任务包括按服务要求加载自有向量表、确认索引状态、验证过滤是否在召回前生效，并与精确检索比较 Recall。若执行计划不能加速，按官方要求调整表布局及查询形式后重新评测，不能仅凭 SQL 执行成功宣称获得 HNSW 加速。
+余弦距离越小越相关，等于 1 减余弦相似度。启用 B 路径前创建 HNSW 索引：
+
+```sql
+CREATE INDEX idx_embedding_hnsw
+  ON kb_embedding USING hnsw (embedding vector_cosine_ops);
+-- 备选 IVFFlat：USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)，建后需 ANALYZE
+```
+
+该查询表达检索语义，不保证过滤条件与 ANN 索引的组合行为。B 路径部署任务包括：用 EXPLAIN 确认排序确实走索引、验证过滤条件下索引是否仍被使用，并与路径 A 精确检索对比 Recall。若过滤导致索引失效或召回明显下降，按官方文档调整查询形式或改回路径 A，不能仅凭 SQL 执行成功宣称获得 ANN 加速。
 
 ## 附录 C 开发验收检查表
 
 - 模型 ID 分别为 text-embedding-v4 与 qwen3.8-flash，地域及权限已验证。
-- MySQL 发行版及小版本已固定，A 与 B 路径的能力边界已确认。
+- PostgreSQL 与 pgvector 版本已固定，A 与 B 路径的能力边界已确认。
 - 文档清洗、分句、分词、关键词和切块均不调用生成模型。
 - 1024 维、归一化方式和输入模板在一个索引内保持一致。
 - 独立全库语义召回与 BM25 召回均通过样本验证。
@@ -812,23 +824,20 @@ LIMIT 50;
 
 以下为关键兼容性依据，访问日期为 2026 年 11 月 6 日。上线时以目标小版本手册和控制台模型能力为准。
 
-[1] MySQL 官方 VECTOR 类型说明  
-https://dev.mysql.com/doc/refman/9.7/en/vector.html
+[1] pgvector 开源向量扩展：类型、距离算子与 HNSW/IVFFlat 索引  
+https://github.com/pgvector/pgvector
 
-[2] MySQL 官方向量函数与 DISTANCE 产品限制  
-https://dev.mysql.com/doc/refman/9.7/en/vector-functions.html
+[2] PostgreSQL 官方文档  
+https://www.postgresql.org/docs/
 
-[3] MySQL HeatWave 自动向量索引说明  
-https://dev.mysql.com/doc/heatwave/en/mys-hw-genai-vector-index-creation.html
+[3] pg_jieba：PostgreSQL 中文分词扩展（可选）  
+https://github.com/jaiminpan/pg_jieba
 
-[4] MySQL 官方 ngram 全文分词器说明  
-https://dev.mysql.com/doc/refman/9.7/en/fulltext-search-ngram.html
-
-[5] 阿里云百炼 OpenAI Embedding 接口兼容说明  
+[4] 阿里云百炼 OpenAI Embedding 接口兼容说明  
 https://help.aliyun.com/zh/model-studio/embedding-interfaces-compatible-with-openai
 
-[6] 阿里云百炼官方模型列表  
+[5] 阿里云百炼官方模型列表  
 https://help.aliyun.com/zh/model-studio/models
 
-[7] 阿里云百炼 OpenAI 兼容 Chat 接口说明  
+[6] 阿里云百炼 OpenAI 兼容 Chat 接口说明  
 https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-chat-completions
