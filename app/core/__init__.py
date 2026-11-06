@@ -1,1 +1,1 @@
-"""Application configuration and error handling."""
+"""Application configuration, auth, logging and error handling."""

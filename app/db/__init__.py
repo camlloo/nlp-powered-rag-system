@@ -1,1 +1,1 @@
-"""Database models and session package placeholder."""
+"""Database models and session package."""

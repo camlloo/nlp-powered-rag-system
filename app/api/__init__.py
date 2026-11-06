@@ -1,1 +1,1 @@
-"""API route package placeholder."""
+"""API routes and dependencies."""
