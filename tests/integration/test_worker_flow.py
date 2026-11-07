@@ -12,7 +12,6 @@ from app.db.models import IngestJob, KbChunk, KbCollection, KbDocumentVersion, K
 from app.db.session import SessionLocal
 from app.gateways.mock import MockEmbeddingGateway
 from app.indexing.snapshot import IndexBuilder, RevisionChanged
-from app.parsers.intake import save_upload
 from app.workers.runner import (
     claim_next_job,
     execute_claimed,
@@ -26,9 +25,9 @@ FILE2 = "第四章 考勤。员工应当在工作日 09:00 前签到。迟到按
 
 
 @pytest.fixture
-def env(pg_ready, tmp_path):
+def env(pg_ready, test_settings):
     kb_id = create_kb()
-    settings = Settings(storage_dir=str(tmp_path))
+    settings = test_settings
     builder = IndexBuilder(
         SessionLocal, MockEmbeddingGateway(dim=1024), settings, worker_id="test-worker"
     )
@@ -37,9 +36,13 @@ def env(pg_ready, tmp_path):
 
 
 def upload_file(kb_id: int, settings: Settings, name: str, content: bytes) -> int:
-    uri, sha_hex = save_upload(
-        content, "txt", upload_dir=settings.storage_dir + "/uploads"
-    )
+    import hashlib
+
+    from app.parsers.intake import MinioStorage
+    from app.storage import build_object_key
+
+    uri = MinioStorage(settings).put(build_object_key(1, name), content)
+    digest = hashlib.sha256(content).digest()
     with SessionLocal() as session:
         from app.db.models import KbDocument
 
@@ -51,7 +54,7 @@ def upload_file(kb_id: int, settings: Settings, name: str, content: bytes) -> in
             document_id=document.id,
             version_no=1,
             title=document.title,
-            file_sha256=bytes.fromhex(sha_hex),
+            file_sha256=digest,
             storage_uri=uri,
             parse_status="pending",
         )
@@ -102,7 +105,7 @@ def test_build_publishes_snapshot(env):
     assert kb.active_index_id == report.index_id
     index = get_index(report.index_id)
     assert index.status == "ready"
-    assert index.source_revision == 1  # 上传时递增
+    assert index.source_revision == 2  # 上传和解析状态变化分别递增
     assert count_chunks(report.index_id) == report.chunks
     assert report.chunks > 0
     with SessionLocal() as session:
@@ -133,13 +136,13 @@ def test_second_upload_rebuilds_full_snapshot(env):
         assert first_index.status == "ready"  # 旧索引保留，物理清理按策略异步执行
 
 
-def test_needs_review_excluded_from_manifest(env):
+def test_needs_review_excluded_from_manifest(env, fake_minio):
     kb_id, settings, builder = env
     from tests.integration.helpers import build_pdf
 
     # 文本密度过低的 PDF：解析成功但质量分不足 -> needs_review，不进入索引
     thin_pdf = build_pdf(["ok"])
-    uri, sha_hex = save_upload(thin_pdf, "pdf", upload_dir=settings.storage_dir + "/uploads")
+    uri, digest = fake_minio.seed(settings, "扫描件.pdf", thin_pdf)
     with SessionLocal() as session:
         from app.db.models import KbDocument
 
@@ -151,7 +154,7 @@ def test_needs_review_excluded_from_manifest(env):
             document_id=document.id,
             version_no=1,
             title="扫描件",
-            file_sha256=bytes.fromhex(sha_hex),
+            file_sha256=digest,
             storage_uri=uri,
             parse_status="pending",
         )
@@ -322,11 +325,13 @@ def get_index(index_id: int) -> KbIndex:
 
 def report_chunks(content: bytes) -> int:
     """估算单个文件的块数：直接跑一次流水线。"""
+    from app.core.config import get_settings
     from app.nlp.pipeline import run_pipeline
     from app.parsers.intake import parse_upload
 
-    parsed = parse_upload("estimate.txt", None, content, Settings())
-    return len(run_pipeline(parsed, Settings()).chunks)
+    settings = get_settings()
+    parsed = parse_upload("estimate.txt", None, content, settings)
+    return len(run_pipeline(parsed, settings).chunks)
 
 
 def count_chunks_of_first(kb_id: int) -> int:

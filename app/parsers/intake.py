@@ -1,14 +1,13 @@
-"""上传入口：三重校验、大小限制、随机内部名存储与摘要（实现文档 §4.1）。
+"""上传解析入口：三重校验、大小限制与对象存储读取。
 
-原文件以随机内部名称保存，不直接信任客户端路径；
+对象删除只允许经由 app.indexing.cleanup 的写入屏障协议执行，
+本模块不提供绕过屏障的直接删除接口。
 解析超时（120s）由 worker 层执行，本模块只做同步解析。
 """
 
 from __future__ import annotations
 
-import hashlib
-import secrets
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 
 from app.core.config import Settings, get_settings
 from app.parsers.base import check_size, detect_format
@@ -16,16 +15,8 @@ from app.parsers.docx import parse_docx
 from app.parsers.markdown import parse_markdown
 from app.parsers.pdf import parse_pdf
 from app.parsers.txt import parse_txt
-from app.schemas.contracts import DocFormat, ParsedDocument
-
-DEFAULT_UPLOAD_DIR = Path("data/uploads")
-
-_EXT_BY_FORMAT: dict[DocFormat, str] = {
-    "txt": ".txt",
-    "markdown": ".md",
-    "docx": ".docx",
-    "pdf": ".pdf",
-}
+from app.schemas.contracts import ParsedDocument
+from app.storage import MinioStorage
 
 
 def parse_upload(
@@ -47,38 +38,6 @@ def parse_upload(
     return parse_pdf(payload, title, settings)
 
 
-def save_upload(
-    payload: bytes, fmt: DocFormat, upload_dir: Path | None = None
-) -> tuple[str, str]:
-    """随机内部名保存原文件，返回 (storage_uri, sha256_hex)。
-
-    uri 形如 uploads/<随机名>.<ext>；数据库保存路径与摘要，文件本体不入库。
-    """
-    directory = Path(upload_dir or DEFAULT_UPLOAD_DIR)
-    directory.mkdir(parents=True, exist_ok=True)
-    name = f"{secrets.token_hex(16)}{_EXT_BY_FORMAT[fmt]}"
-    (directory / name).write_bytes(payload)
-    return f"uploads/{name}", hashlib.sha256(payload).hexdigest()
-
-
 def load_upload(storage_uri: str, settings: Settings) -> bytes:
-    """按 storage_uri 读取原始文件；路径必须位于存储根目录内（防目录穿越）。"""
-    root = Path(settings.storage_dir).resolve()
-    target = (root / storage_uri).resolve()
-    if not target.is_relative_to(root):
-        raise ValueError(f"非法存储路径：{storage_uri}")
-    if not target.is_file():
-        raise FileNotFoundError(f"存储文件不存在：{storage_uri}")
-    return target.read_bytes()
-
-
-def delete_upload(storage_uri: str, settings: Settings) -> bool:
-    """物理删除原始文件（物理清理阶段调用）；返回是否实际删除。"""
-    root = Path(settings.storage_dir).resolve()
-    target = (root / storage_uri).resolve()
-    if not target.is_relative_to(root):
-        raise ValueError(f"非法存储路径：{storage_uri}")
-    if target.is_file():
-        target.unlink()
-        return True
-    return False
+    """读取对象；旧本地路径不会被当作存储回退。"""
+    return MinioStorage(settings).get(storage_uri)

@@ -40,6 +40,7 @@ async def retrieval_debug(
         question=payload.question,
         history=[item.model_dump() for item in payload.history],
         top_k=payload.top_k,
+        principal=principal,
     )
     return RetrievalDebugResponse(
         kb_id=result.kb_id,

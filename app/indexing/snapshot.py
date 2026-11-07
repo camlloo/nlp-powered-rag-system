@@ -5,8 +5,8 @@
   -> embed（批量向量，缓存复用未变化文件）-> validate -> publish（短事务）
 
 一致性红线：
-- 构建开始记录 data_revision 并固定文件清单；发布前锁定知识库行复核，
-  修订号变化则快照转 superseded 并重新构建；
+- 解析状态变化与 data_revision 同事务更新；解析后记录修订号并固定文件清单，
+  发布前锁定知识库行复核，修订号变化或快照被替代则放弃发布；
 - 失败快照不替换现有索引，旧索引持续服务；needs_review 不进入清单；
 - 远程模型调用不持有数据库锁；提交阶段校验租约所有者；
 - 处理按文件版本及流水线指纹幂等（向量网关按 embedding_input 哈希复用）。
@@ -17,7 +17,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import PurePosixPath
 
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import sessionmaker
@@ -38,6 +38,7 @@ from app.gateways.mock import MockEmbeddingGateway
 from app.nlp.pipeline import pipeline_version, run_pipeline
 from app.parsers.intake import load_upload, parse_upload
 from app.schemas.contracts import ParsedDocument
+from app.storage import parse_object_uri
 
 logger = logging.getLogger(__name__)
 
@@ -54,8 +55,14 @@ STAGE_VALIDATE = "validate"
 STAGE_PUBLISH = "publish"
 
 
+def _parse_filename(title: str, storage_uri: str, settings: Settings) -> str:
+    """使用解码后的对象原文件名确定扩展名，保留数据库标题作为解析标题。"""
+    key = parse_object_uri(storage_uri, bucket=settings.minio_bucket)
+    return f"{title}{PurePosixPath(key).suffix}"
+
+
 class RevisionChanged(Exception):
-    """发布时 data_revision 与构建起点不一致：快照转 superseded 并重新构建。"""
+    """快照已失效或被替代，不能发布。"""
 
 
 class LeaseLost(Exception):
@@ -118,6 +125,7 @@ class _FileUnit:
     title: str
     storage_uri: str
     filename: str
+    file_sha256: bytes
     uploader_user_id: int = 1
     visibility: str = "public"
     org_tag_id: int | None = None
@@ -196,7 +204,8 @@ class IndexBuilder:
                 document_id=version.document_id,
                 title=version.title,
                 storage_uri=version.storage_uri,
-                filename=f"{version.title}{Path(version.storage_uri).suffix}",
+                filename=_parse_filename(version.title, version.storage_uri, self._settings),
+                file_sha256=bytes(version.file_sha256),
                 uploader_user_id=document.uploader_user_id,
                 visibility=document.visibility,
                 org_tag_id=document.org_tag_id,
@@ -212,9 +221,10 @@ class IndexBuilder:
         draft_rows: list[_DraftRow] = []
         per_file_counts: dict[int, int] = {}
         for unit in units:
-            parsed = parse_upload(
-                unit.filename, None, load_upload(unit.storage_uri, self._settings), self._settings
+            payload = self._load_verified(
+                kb_id, unit.document_id, unit.doc_version_id, unit.storage_uri, unit.file_sha256
             )
+            parsed = parse_upload(unit.filename, None, payload, self._settings)
             result = run_pipeline(parsed, self._settings)
             for draft in result.chunks:
                 draft_rows.append(
@@ -275,16 +285,51 @@ class IndexBuilder:
 
     # ------------------------------------------------------------------ stages
 
+    def _assert_live_version(
+        self, kb_id: int, document_id: int, doc_version_id: int, storage_uri: str, digest: bytes
+    ) -> None:
+        """读前和读后检查删除状态与清单是否仍对应同一版本。"""
+        with self._sessions() as session:
+            kb = session.get(KbCollection, kb_id)
+            document = session.get(KbDocument, document_id)
+            version = session.get(KbDocumentVersion, doc_version_id)
+            if (
+                kb is None
+                or kb.deleted_at is not None
+                or document is None
+                or document.kb_id != kb_id
+                or document.deleted_at is not None
+                or version is None
+                or version.kb_id != kb_id
+                or version.document_id != document_id
+                or version.storage_uri != storage_uri
+                or version.file_sha256 != digest
+            ):
+                raise AppError("文件已删除或版本已变化", code="document_changed", status_code=409)
+
+    def _load_verified(
+        self, kb_id: int, document_id: int, doc_version_id: int, storage_uri: str, digest: bytes
+    ) -> bytes:
+        self._assert_live_version(kb_id, document_id, doc_version_id, storage_uri, digest)
+        payload = load_upload(storage_uri, self._settings)
+        if len(digest) != 32 or hashlib.sha256(payload).digest() != digest:
+            raise AppError("文件内容与版本摘要不一致", code="file_digest_mismatch", status_code=409)
+        self._assert_live_version(kb_id, document_id, doc_version_id, storage_uri, digest)
+        return payload
+
     def _parse_and_mark(self, kb_id: int, doc_version_id: int) -> None:
         """解析新文件并落 parse_status；needs_review 不进入清单，失败则任务失败。"""
         with self._sessions() as session:
             row = session.get(KbDocumentVersion, doc_version_id)
             if row is None or row.kb_id != kb_id:
                 raise AppError("文件版本不存在", code="not_found", status_code=404)
-            filename = f"{row.title}{Path(row.storage_uri).suffix}"
+            title = row.title
+            document_id = row.document_id
             storage_uri = row.storage_uri
+            digest = bytes(row.file_sha256)
         try:
-            payload = load_upload(storage_uri, self._settings)
+            filename = _parse_filename(title, storage_uri, self._settings)
+            payload = self._load_verified(kb_id, document_id, doc_version_id, storage_uri, digest)
             parsed = parse_upload(filename, None, payload, self._settings)
         except AppError as exc:
             self._mark_parse_status(doc_version_id, PARSE_FAILED)
@@ -302,18 +347,35 @@ class IndexBuilder:
 
     def _mark_parse_status(self, doc_version_id: int, status: str) -> None:
         with self._sessions() as session:
-            session.execute(
+            # 条件更新在行锁下判断是否真的变化，避免并发重复解析重复递增。
+            kb_id = session.execute(
                 update(KbDocumentVersion)
-                .where(KbDocumentVersion.id == doc_version_id)
+                .where(
+                    KbDocumentVersion.id == doc_version_id,
+                    KbDocumentVersion.parse_status != status,
+                )
                 .values(parse_status=status)
-            )
+                .returning(KbDocumentVersion.kb_id)
+            ).scalar_one_or_none()
+            if kb_id is not None:
+                session.execute(
+                    update(KbCollection)
+                    .where(KbCollection.id == kb_id)
+                    .values(data_revision=KbCollection.data_revision + 1)
+                )
             session.commit()
 
     def _create_index_row(
         self, kb_id: int, source_revision: int, units: list[_FileUnit], tenant_id: int
     ) -> int:
         with self._sessions() as session:
-            # 放弃同知识库遗留的 building 快照（崩溃残留）；building 不参与检索
+            # 先锁住知识库并校验修订号，防止旧清单在新构建开始后替代新快照。
+            kb = session.execute(
+                select(KbCollection).where(KbCollection.id == kb_id).with_for_update()
+            ).scalar_one()
+            if kb.deleted_at is not None or kb.data_revision != source_revision:
+                raise RevisionChanged(f"kb={kb_id} 构建清单已失效")
+            # 放弃同知识库遗留的 building 快照；building 不参与检索。
             session.execute(
                 update(KbIndex)
                 .where(KbIndex.kb_id == kb_id, KbIndex.status == "building")
@@ -457,15 +519,32 @@ class IndexBuilder:
             kb = session.execute(
                 select(KbCollection).where(KbCollection.id == kb_id).with_for_update()
             ).scalar_one()
-            if kb.data_revision != source_revision:
+            if kb.deleted_at is not None or kb.data_revision != source_revision:
                 session.execute(
-                    update(KbIndex).where(KbIndex.id == index_id).values(status="superseded")
+                    update(KbIndex)
+                    .where(
+                        KbIndex.id == index_id,
+                        KbIndex.kb_id == kb_id,
+                        KbIndex.status == "building",
+                    )
+                    .values(status="superseded")
                 )
                 session.commit()
                 raise RevisionChanged(
-                    f"kb={kb_id} 修订号变化："
-                    f"{source_revision} -> {kb.data_revision}，快照转 superseded"
+                    f"kb={kb_id} 已删除或修订号变化："
+                    f"{source_revision} -> {kb.data_revision}，快照不可发布"
                 )
-            session.execute(update(KbIndex).where(KbIndex.id == index_id).values(status="ready"))
+            result = session.execute(
+                update(KbIndex)
+                .where(
+                    KbIndex.id == index_id,
+                    KbIndex.kb_id == kb_id,
+                    KbIndex.source_revision == source_revision,
+                    KbIndex.status == "building",
+                )
+                .values(status="ready")
+            )
+            if result.rowcount != 1:
+                raise RevisionChanged(f"kb={kb_id} index={index_id} 已被替代或不再可发布")
             kb.active_index_id = index_id
             session.commit()

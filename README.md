@@ -2,7 +2,7 @@
 
 项目标识与 Gitee 仓库名统一为 `nlp-powered-rag-system`。
 
-使用传统 NLP 处理文档，以 PostgreSQL 16/17 + pgvector 统一存储业务数据和向量，向量模型为 `text-embedding-v4`，问答模型为 `qwen3.8-flash`。
+使用传统 NLP 处理文档，以 PostgreSQL 16/17 + pgvector 存储业务数据和向量，以 MinIO 存储上传原文件；向量模型为 `text-embedding-v4`，问答模型为 `qwen3.8-flash`。
 
 **数据组织（去知识库化）**：文档不设知识库，直接归属「个人」或「某组织」并设公开/私有——组织公开=所有人可检索；组织私有=上传者与该组织成员；个人公开=所有人；个人私有=仅上传者。问答面向当前用户可见的全部文档（内部由单一主空间承载，见 docs/部署与运维.md §5）。
 
@@ -13,24 +13,25 @@
 
 ## 快速开始
 
-数据库运行在 WSL docker 容器 `pgvector` 中（镜像 `pgvector/pgvector:pg17`，端口映射 `5433 -> 5432`，账号 `postgres`）。本项目使用独立数据库 `nlp_rag`，pgvector 扩展由首版迁移自动安装。
+数据库运行在 WSL docker 容器 `pgvector` 中（镜像 `pgvector/pgvector:pg17`，端口映射 `5433 -> 5432`，账号 `postgres`）。本项目使用独立数据库 `nlp_rag`，pgvector 扩展由首版迁移自动安装。原文件存储使用 MinIO，本机 endpoint 为 `127.0.0.1:9000`，桶为 `nlprag`。
 
-1. 确认容器运行：`wsl docker ps | grep pgvector`
-   （如需重建：`wsl docker run -d --name pgvector -e POSTGRES_PASSWORD=postgres -p 5433:5432 pgvector/pgvector:pg17`）
+1. 确认 PostgreSQL 容器运行：`wsl docker ps | grep pgvector`；按实际环境准备数据库容器及凭证。
 2. 建库（一次性，首次已执行）：`wsl docker exec -u postgres pgvector psql -c "CREATE DATABASE nlp_rag ENCODING 'UTF8' TEMPLATE template0"`
-3. 安装依赖：`uv sync`
-4. 配置环境：`cp .env.example .env`（本机默认值已对齐上述容器，`API_TOKEN` 建议修改）
-5. 执行迁移：`uv run alembic upgrade head`
-6. 初始化种子数据：`uv run python -m scripts.seed`
-7. 数据库能力验证（PG 版本、pgvector 版本、向量读写往返）：`uv run python -m scripts.verify_db`
-8. 启动服务：`uv run uvicorn app.main:app --reload`
+3. 安装依赖：`uv sync`。
+4. 配置环境：`cp .env.example .env`；填写 `API_TOKEN`、模型凭证及 MinIO 配置。MinIO 的 `MINIO_ENDPOINT=127.0.0.1:9000`、`MINIO_BUCKET=nlprag`、`MINIO_ACCESS_KEY=<用户名>`、`MINIO_SECURE=false` 为本机配置示例；`MINIO_SECRET_KEY` 通过安全渠道设置，确保桶 `nlprag` 可访问。API 与 worker 必须使用相同的 endpoint、桶、凭证与传输配置，不提交 `.env`。
+5. 执行迁移：`uv run alembic upgrade head`。
+6. 初始化种子数据：`uv run python -m scripts.seed`。
+7. 数据库能力验证（PG 版本、pgvector 版本、向量读写往返）：`uv run python -m scripts.verify_db`。
+8. 启动服务：`uv run uvicorn app.main:app --reload`。
    - 接口文档 http://127.0.0.1:8000/docs
-   - 健康检查 `GET /healthz`（存活）、`GET /readyz`（就绪，检查数据库与 pgvector 扩展）
+   - 健康检查 `GET /healthz`（存活）、`GET /readyz`（就绪）；探针通过不代表 worker 或付费模型可用，仍需单独验证 MinIO 原文件读写，详见部署手册。
 9. 启动前端（可选，开发模式）：`cd frontend && npm install && npm run dev`，访问 http://127.0.0.1:5173；
-   生产模式 `npm run build` 后由后端同源托管 `frontend/dist`，直接访问 http://127.0.0.1:8000
-10. 常驻 worker（上传文档/重建索引必需）：`uv run python -m app.workers`
+   生产模式 `npm run build` 后由后端同源托管 `frontend/dist`，直接访问 http://127.0.0.1:8000。
+10. 常驻 worker（上传文档/重建索引必需）：`uv run python -m app.workers`。
 
-注：若 `127.0.0.1:5433` 连不上，用 `wsl hostname -I` 获取 WSL IP 填入 `.env` 的 `PG_HOST`。
+注：若 `127.0.0.1:5433` 连不上，用 `wsl hostname -I` 获取 WSL IP 填入 `.env` 的 `PG_HOST`。`127.0.0.1:9000` 仅适用于 API 和 worker 都能通过各自的回环地址访问同一 MinIO 的环境；跨容器或跨主机部署时应改成双方均可访问的地址。
+
+**原文件与切换风险**：对象键采用 `YYYY/MM/DD/用户ID/文件名去扩展名/原始文件名`，例如 `2026/11/07/123/报告/报告.pdf`。同一对象键已存在时先删除再上传；若上传失败，原对象可能无法恢复，操作前应确保可恢复备份。旧本地文件及对应数据库记录选择彻底删除、不迁移；应先停止写入、核对范围并制定备份和恢复方案，再由运维人员执行，详见部署手册。
 
 **认证说明**：首期使用静态 API Token（环境变量 `API_TOKEN`），请求头 `X-API-Token: <token>` 或 `Authorization: Bearer <token>`。tenant_id/user_id 从服务端凭证解析，不信任请求体。
 
@@ -63,8 +64,6 @@ nlp-powered-rag-system/
 │   ├── unit/             # 单元测试
 │   ├── integration/      # 集成测试（无数据库自动跳过）
 │   └── evaluation/       # 检索与答案评测预留
-├── data/
-│   └── uploads/          # 上传文件目录 不提交真实文件
 ├── scripts/
 │   ├── seed.py           # 种子数据
 │   └── verify_db.py      # 数据库能力与向量读写验证
@@ -81,6 +80,7 @@ nlp-powered-rag-system/
 | Python | 推荐 3.12，依赖声明支持 3.11 与 3.12 |
 | 后端框架 | FastAPI |
 | 数据库与向量存储 | PostgreSQL 16/17 + pgvector |
+| 原文件存储 | MinIO（本机 `127.0.0.1:9000`，桶 `nlprag`） |
 | 数据访问与迁移 | SQLAlchemy 2、psycopg 3、pgvector Python 绑定、Alembic |
 | 传统 NLP | jieba 规则处理 TF-IDF BM25 |
 | 向量模型 | text-embedding-v4，1024 维 |

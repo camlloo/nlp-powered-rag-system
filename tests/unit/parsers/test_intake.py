@@ -1,6 +1,6 @@
 """intake 三重校验、大小限制与存储单测。"""
 
-import hashlib
+from unittest.mock import Mock
 
 import pytest
 
@@ -42,7 +42,7 @@ def test_detect_unknown_extension():
 
 
 def test_check_size_empty_and_oversize():
-    settings = Settings(max_upload_bytes=10)
+    settings = Settings(_env_file=None, max_upload_bytes=10)
     with pytest.raises(PayloadTooLarge, match="空文件"):
         intake.parse_upload("a.txt", "text/plain", b"", settings)
     with pytest.raises(PayloadTooLarge, match="超过限制"):
@@ -50,17 +50,32 @@ def test_check_size_empty_and_oversize():
 
 
 def test_parse_upload_dispatch_txt():
-    parsed = intake.parse_upload("制度.txt", "text/plain", "员工报销".encode(), Settings())
+    parsed = intake.parse_upload(
+        "制度.txt", "text/plain", "员工报销".encode(), Settings(_env_file=None)
+    )
     assert parsed.fmt == "txt"
     assert parsed.title == "制度"
     assert parsed.encoding == "utf-8"
 
 
-def test_save_upload_random_name_and_sha(tmp_path):
-    payload = b"hello rag"
-    uri, digest = intake.save_upload(payload, "txt", upload_dir=tmp_path)
-    assert uri.startswith("uploads/")
-    assert uri.endswith(".txt")
-    stored = tmp_path / uri.split("/", 1)[1]
-    assert stored.read_bytes() == payload
-    assert digest == hashlib.sha256(payload).hexdigest()
+def test_load_uses_object_storage(monkeypatch):
+    storage = Mock()
+    storage.get.return_value = b"hello rag"
+    factory = Mock(return_value=storage)
+    monkeypatch.setattr(intake, "MinioStorage", factory)
+    settings = Settings(_env_file=None, minio_bucket="nlprag")
+    uri = "s3://nlprag/2026/11/07/1/a/a.txt"
+
+    assert intake.load_upload(uri, settings) == b"hello rag"
+    factory.assert_called_once_with(settings)
+    storage.get.assert_called_once_with(uri)
+    # 直接删除接口已移除：物理删除只能经 cleanup 屏障协议。
+    assert not hasattr(intake, "delete_upload")
+
+
+def test_storage_read_failure_propagates(monkeypatch):
+    storage = Mock()
+    storage.get.side_effect = OSError("storage unavailable")
+    monkeypatch.setattr(intake, "MinioStorage", Mock(return_value=storage))
+    with pytest.raises(OSError, match="storage unavailable"):
+        intake.load_upload("s3://nlprag/2026/11/07/1/a/a.txt", Settings(_env_file=None))

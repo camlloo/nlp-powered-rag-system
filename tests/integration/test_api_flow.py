@@ -17,12 +17,13 @@ FILE_CONTENT = "第三章 费用报销。员工应在出差结束后 30 日内�
 
 
 @pytest.fixture
-def client(pg_ready, tmp_path):
-    test_settings = Settings(storage_dir=str(tmp_path))
+def client(pg_ready, test_settings):
     app.dependency_overrides[get_settings] = lambda: test_settings
-    with TestClient(app) as test_client:
-        yield test_client, str(tmp_path)
-    app.dependency_overrides.pop(get_settings, None)
+    try:
+        with TestClient(app) as test_client:
+            yield test_client, test_settings
+    finally:
+        app.dependency_overrides.pop(get_settings, None)
 
 
 def auth_headers():
@@ -31,9 +32,8 @@ def auth_headers():
     return {"X-API-Token": gs().api_token}
 
 
-def run_pending_job(storage_dir: str) -> tuple[int, str]:
+def run_pending_job(settings: Settings) -> tuple[int, str]:
     """模拟 worker：领取一个任务并执行完成，返回 (job_id, status)。"""
-    settings = Settings(storage_dir=storage_dir)
     builder = IndexBuilder(
         SessionLocal, MockEmbeddingGateway(dim=1024), settings, worker_id="it-worker"
     )
@@ -56,7 +56,7 @@ def run_pending_job(storage_dir: str) -> tuple[int, str]:
 
 
 def test_full_flow_upload_build_query_status(client):
-    test_client, tmp_path = client
+    test_client, settings = client
     prefix = get_settings().api_prefix
 
     # 1. 创建知识库
@@ -80,7 +80,7 @@ def test_full_flow_upload_build_query_status(client):
         assert resp.json()["status"] in ("queued", "running")
 
         # 4. 模拟 worker 执行
-        _, status = run_pending_job(tmp_path)
+        _, status = run_pending_job(settings)
         assert status == "succeeded"
 
         # 5. 任务状态与索引发布
@@ -97,7 +97,7 @@ def test_full_flow_upload_build_query_status(client):
         cleanup_kb(kb_id)
 
 
-def test_idempotency_replay_and_conflict(client):
+def test_idempotency_replay_and_conflict(client, fake_minio):
     test_client, _ = client
     prefix = get_settings().api_prefix
     kb_id = test_client.post(
@@ -110,7 +110,19 @@ def test_idempotency_replay_and_conflict(client):
         }
         first = test_client.post(f"{prefix}/kbs/{kb_id}/documents", **kwargs)
         assert first.status_code == 202
+        from sqlalchemy import select
+
+        from app.db.upload_guard import upload_idempotency, upload_object_guard
+
+        with SessionLocal() as session:
+            guard = session.execute(select(upload_object_guard)).mappings().one()
+            idem = session.execute(select(upload_idempotency)).mappings().one()
+            assert (guard["state"], guard["token"]) == ("ready", None)
+            assert (idem["state"], idem["job_id"]) == ("completed", first.json()["job_id"])
+        events_after_first = list(fake_minio.events)
+        assert [op for op, _ in events_after_first] == ["delete", "put"]
         second = test_client.post(f"{prefix}/kbs/{kb_id}/documents", **kwargs)
+        assert fake_minio.events == events_after_first
         assert second.status_code == 202
         assert second.headers.get("Idempotent-Replay") == "true"
         assert second.json()["job_id"] == first.json()["job_id"]  # 返回既有结果
@@ -121,6 +133,48 @@ def test_idempotency_replay_and_conflict(client):
             headers={**auth_headers(), "Idempotency-Key": "key-1"},
         )
         assert other.status_code == 409  # 同键不同内容
+        assert fake_minio.events == events_after_first
+    finally:
+        cleanup_kb(kb_id)
+
+
+def test_existing_writing_guard_blocks_upload_without_storage_io(client, fake_minio, monkeypatch):
+    import hashlib
+    from datetime import date
+
+    from sqlalchemy import insert, select
+
+    from app.db.upload_guard import upload_object_guard
+    from app.storage import build_object_key, object_uri
+
+    day = date.today()
+    monkeypatch.setattr(
+        "app.api.documents.build_object_key",
+        lambda user_id, filename: build_object_key(user_id, filename, local_date=day),
+    )
+
+    test_client, settings = client
+    prefix = get_settings().api_prefix
+    kb_id = test_client.post(
+        f"{prefix}/kbs", json={"name": "写入屏障"}, headers=auth_headers()
+    ).json()["kb_id"]
+    try:
+        uri = object_uri(settings.minio_bucket, build_object_key(1, "blocked.txt", local_date=day))
+        with SessionLocal() as session:
+            session.execute(insert(upload_object_guard).values(
+                uri_hash=hashlib.sha256(uri.encode()).hexdigest(), uri=uri,
+                state="writing", token="x" * 32,
+            ))
+            session.commit()
+        response = test_client.post(
+            f"{prefix}/kbs/{kb_id}/documents", headers=auth_headers(),
+            files={"file": ("blocked.txt", FILE_CONTENT, "text/plain")},
+        )
+        assert response.status_code == 409, response.text
+        assert fake_minio.events == []
+        with SessionLocal() as session:
+            guard = session.execute(select(upload_object_guard)).mappings().one()
+            assert (guard["state"], guard["token"]) == ("writing", "x" * 32)
     finally:
         cleanup_kb(kb_id)
 

@@ -9,14 +9,12 @@ import asyncio
 import pytest
 
 from app.core.auth import get_admin_principal
-from app.core.config import Settings
 from app.db.models import KbCollection, KbDocument, KbDocumentVersion
 from app.db.session import SessionLocal
 from app.gateways.mock import MockChatGateway, MockEmbeddingGateway
 from app.generation.service import QaService
 from app.indexing.cache import IndexCacheManager
 from app.indexing.snapshot import IndexBuilder
-from app.parsers.intake import save_upload
 from app.retrieval.service import RetrievalService
 from tests.evaluation.ablation import channel_ablation, chunking_ablation
 from tests.evaluation.dataset import load_cases, validate_dataset
@@ -40,16 +38,14 @@ CORPUS = [
 
 
 @pytest.fixture
-def eval_kb(pg_ready, tmp_path):
+def eval_kb(pg_ready, test_settings, fake_minio):
     kb_id = create_kb()
-    settings = Settings(storage_dir=str(tmp_path))
+    settings = test_settings
     builder = IndexBuilder(
         SessionLocal, MockEmbeddingGateway(dim=1024), settings, worker_id="eval-worker"
     )
     for name, content in CORPUS:
-        uri, sha_hex = save_upload(
-            content.encode(), "txt", upload_dir=settings.storage_dir + "/uploads"
-        )
+        uri, digest = fake_minio.seed(settings, name, content.encode())
         with SessionLocal() as session:
             document = KbDocument(kb_id=kb_id, title=name.rsplit(".", 1)[0])
             session.add(document)
@@ -59,7 +55,7 @@ def eval_kb(pg_ready, tmp_path):
                 document_id=document.id,
                 version_no=1,
                 title=document.title,
-                file_sha256=bytes.fromhex(sha_hex),
+                file_sha256=digest,
                 storage_uri=uri,
                 parse_status="pending",
             )

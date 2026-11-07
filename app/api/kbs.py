@@ -11,7 +11,8 @@ import datetime as dt
 from datetime import datetime
 
 from fastapi import APIRouter, File, Form, Header, Query, UploadFile
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
+from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import PrincipalDep, SessionDep, SettingsDep, require_kb_access
 from app.api.documents import create_document_record
@@ -97,7 +98,8 @@ async def upload_document(
 
     # 组织标签：随上传者继承（首个组织标签）；检索级过滤依据
     org_tag_id = sorted(principal.org_tag_ids)[0] if principal.org_tag_ids else None
-    return create_document_record(
+    return await run_in_threadpool(
+        create_document_record,
         session=session,
         principal=principal,
         settings=settings,
@@ -133,8 +135,13 @@ def delete_kb(kb_id: int, session: SessionDep, principal: PrincipalDep) -> KbDel
     if kb.deleted_at is not None:
         raise Conflict("知识库已删除")
     deleted_at = datetime.now(dt.UTC)
-    kb.deleted_at = deleted_at
-    kb.data_revision += 1
+    result = session.execute(
+        update(KbCollection)
+        .where(KbCollection.id == kb_id, KbCollection.deleted_at.is_(None))
+        .values(deleted_at=deleted_at, data_revision=KbCollection.data_revision + 1)
+    )
+    if result.rowcount != 1:
+        raise Conflict("知识库已删除")
     cleanup_job = IngestJob(
         kb_id=kb_id, job_type="cleanup", payload_json={"reason": "kb_deleted"}
     )
@@ -222,9 +229,19 @@ def delete_document(
         raise Conflict("文档已删除")
 
     deleted_at = datetime.now(dt.UTC)
-    document.deleted_at = deleted_at
-    kb = session.get(KbCollection, document.kb_id)
-    kb.data_revision += 1  # 同事务递增：旧内容立即失效（缓存按修订号重载）
+    result = session.execute(
+        update(KbDocument)
+        .where(KbDocument.id == document_id, KbDocument.deleted_at.is_(None))
+        .values(deleted_at=deleted_at)
+    )
+    if result.rowcount != 1:
+        raise Conflict("文档已删除")
+    # 与删除同事务使用数据库原子增量，避免覆盖并发的上传或替换修订号。
+    session.execute(
+        update(KbCollection)
+        .where(KbCollection.id == document.kb_id)
+        .values(data_revision=KbCollection.data_revision + 1)
+    )
     reindex_job = IngestJob(
         kb_id=document.kb_id,
         job_type="reindex",

@@ -67,8 +67,15 @@ class Settings(BaseSettings):
     chat_max_output_tokens: int = 1200
     vector_cache_max_entries: int = 10000
 
+    # MinIO 原始文件存储：密钥须通过环境变量或部署配置提供。
+    minio_endpoint: str = "127.0.0.1:9000"
+    minio_bucket: str = "nlprag"
+    minio_access_key: str = "admin"
+    minio_secret_key: str = Field(default="", repr=False)
+    minio_secure: bool = False
+
     # 索引与 worker（实现文档 §5.2/§9.4/§13.1）
-    storage_dir: str = "data"  # 原始文件根目录，storage_uri 形如 uploads/<随机名>
+    storage_dir: str = "data"  # 旧配置；迁移期间保留字段，不作为对象存储回退
     worker_lease_seconds: int = 300
     worker_poll_interval_seconds: float = 2.0
     index_cache_budget_mb: int = 256  # 单进程索引缓存起始预算（向量+文本+词项）

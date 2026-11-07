@@ -19,19 +19,23 @@ CONTENT = "第三章 费用报销。员工应在出差结束后 30 日内申请�
 
 
 @pytest.fixture
-def env(pg_ready, tmp_path):
+def env(pg_ready, test_settings):
     kb_id = create_kb()
-    settings = Settings(storage_dir=str(tmp_path))
+    settings = test_settings
     builder = IndexBuilder(SessionLocal, MockEmbeddingGateway(dim=1024), settings, worker_id="tw")
     yield kb_id, settings, builder
     cleanup_kb(kb_id)
 
 
 def upload_and_build(kb_id: int, settings: Settings, builder: IndexBuilder) -> int:
-    from app.db.models import KbDocument, KbDocumentVersion
-    from app.parsers.intake import save_upload
+    import hashlib
 
-    uri, sha_hex = save_upload(CONTENT, "txt", upload_dir=settings.storage_dir + "/uploads")
+    from app.db.models import KbDocument, KbDocumentVersion
+    from app.parsers.intake import MinioStorage
+    from app.storage import build_object_key
+
+    uri = MinioStorage(settings).put(build_object_key(1, "制度.txt"), CONTENT)
+    digest = hashlib.sha256(CONTENT).digest()
     with SessionLocal() as session:
         document = KbDocument(kb_id=kb_id, title="制度")
         session.add(document)
@@ -41,7 +45,7 @@ def upload_and_build(kb_id: int, settings: Settings, builder: IndexBuilder) -> i
             document_id=document.id,
             version_no=1,
             title="制度",
-            file_sha256=bytes.fromhex(sha_hex),
+            file_sha256=digest,
             storage_uri=uri,
             parse_status="pending",
         )
@@ -63,7 +67,7 @@ def kb_row(kb_id: int) -> KbCollection:
 def test_load_alignment_and_reuse(env):
     kb_id, settings, builder = env
     index_id = upload_and_build(kb_id, settings, builder)
-    manager = IndexCacheManager(Settings())
+    manager = IndexCacheManager(settings)
     kb = kb_row(kb_id)
 
     loaded = asyncio.run(
@@ -99,7 +103,7 @@ def test_load_alignment_and_reuse(env):
 def test_revision_change_forces_reload(env):
     kb_id, settings, builder = env
     index_id = upload_and_build(kb_id, settings, builder)
-    manager = IndexCacheManager(Settings())
+    manager = IndexCacheManager(settings)
     kb = kb_row(kb_id)
 
     asyncio.run(
@@ -116,6 +120,7 @@ def test_revision_change_forces_reload(env):
                 data_revision=KbCollection.data_revision + 1
             )
         )
+        session.commit()
     kb2 = kb_row(kb_id)
     reloaded = asyncio.run(
         manager.ensure_loaded(
@@ -130,7 +135,7 @@ def test_revision_change_forces_reload(env):
 def test_load_race_conflict(env):
     kb_id, settings, builder = env
     upload_and_build(kb_id, settings, builder)
-    manager = IndexCacheManager(Settings())
+    manager = IndexCacheManager(settings)
     kb = kb_row(kb_id)
 
     # 构造"装载目标与库内 active 不一致"的竞态：指向另一个 ready 快照
@@ -159,8 +164,8 @@ def test_load_race_conflict(env):
         )
 
 
-def test_budget_check():
-    manager = IndexCacheManager(Settings(index_cache_budget_mb=1))
+def test_budget_check(test_settings):
+    manager = IndexCacheManager(test_settings.model_copy(update={"index_cache_budget_mb": 1}))
     with pytest.raises(Conflict, match="预算"):
         manager._check_budget(3 * 1048576)
     manager._check_budget(1024)  # 预算内通过
@@ -169,7 +174,7 @@ def test_budget_check():
 def test_tenant_isolation(env):
     kb_id, settings, builder = env
     index_id = upload_and_build(kb_id, settings, builder)
-    manager = IndexCacheManager(Settings())
+    manager = IndexCacheManager(settings)
     kb = kb_row(kb_id)
     with pytest.raises(Conflict, match="租户"):
         asyncio.run(

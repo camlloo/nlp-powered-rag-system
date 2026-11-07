@@ -1,11 +1,10 @@
-"""集成测试辅助：知识库创建与按子表到父表顺序清理。"""
+"""集成测试辅助：知识库创建、屏障登记与按子表到父表顺序清理。"""
 
+import hashlib
 import uuid
-from pathlib import Path
 
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import delete, insert, select, text, update
 
-from app.core.config import get_settings
 from app.db.models import (
     IngestJob,
     KbChunk,
@@ -15,13 +14,28 @@ from app.db.models import (
     KbEmbedding,
 )
 from app.db.session import SessionLocal
+from app.db.upload_guard import upload_object_guard
+
+
+def seed_object_guard(session, uri: str) -> None:
+    """种入 fake 桶对象时同步登记 ready 屏障，与生产上传准备事务一致。
+
+    缺屏障行代表迁移前遗留对象，cleanup 会保守保留、绝不删除；测试若
+    要覆盖协议内清理路径，必须与对象写入一起登记屏障。
+    """
+    session.execute(insert(upload_object_guard).values(
+        uri_hash=hashlib.sha256(uri.encode("utf-8")).hexdigest(),
+        uri=uri,
+        state="ready",
+        token=None,
+    ))
 
 
 def cleanup_uploaded_documents(uploader_user_ids: list[int]) -> int:
-    """按上传者硬删文档及其块/向量/版本/任务与物理上传文件（测试残留清理）。
+    """按上传者清理测试数据库记录，并递增主空间修订号。
 
-    主空间是共享设施：删行递增 data_revision 使缓存失效，并同步删除
-    data/uploads 下的原始文件，避免每次 pytest 都堆积孤儿上传残留。
+    不访问本地文件或对象桶。测试须使用隔离的 fake 存储；真实桶的对象
+    可能由其他版本引用或已被覆盖，不能由共享数据库测试清理。
     """
     if not uploader_user_ids:
         return 0
@@ -41,11 +55,6 @@ def cleanup_uploaded_documents(uploader_user_ids: list[int]) -> int:
         version_ids = session.scalars(
             select(KbDocumentVersion.id).where(KbDocumentVersion.document_id.in_(doc_ids))
         ).all()
-        storage_uris = session.scalars(
-            select(KbDocumentVersion.storage_uri).where(
-                KbDocumentVersion.id.in_(version_ids)
-            )
-        ).all() if version_ids else []
         chunk_ids = session.scalars(
             select(KbChunk.id).where(KbChunk.document_id.in_(doc_ids))
         ).all()
@@ -65,12 +74,6 @@ def cleanup_uploaded_documents(uploader_user_ids: list[int]) -> int:
                 .values(data_revision=KbCollection.data_revision + 1)
             )
         session.commit()
-    # 提交成功后再删物理文件：失败不影响数据库一致性（残留可由一次性脚本清理）
-    root = Path(get_settings().storage_dir)
-    for uri in storage_uris:
-        f = root / uri
-        if f.is_file():
-            f.unlink()
     return len(doc_ids)
 
 
@@ -84,10 +87,7 @@ def create_kb(name: str | None = None) -> int:
 
 def cleanup_kb(kb_id: int) -> None:
     with SessionLocal() as session:
-        # 该库全部版本的物理上传文件在提交后删除
-        uris = session.scalars(
-            select(KbDocumentVersion.storage_uri).where(KbDocumentVersion.kb_id == kb_id)
-        ).all()
+        # 只清理数据库；对象存储须由隔离的 fake 在测试结束时丢弃。
         session.execute(
             text(
                 "DELETE FROM kb_embedding WHERE chunk_id IN "
@@ -107,11 +107,6 @@ def cleanup_kb(kb_id: int) -> None:
             session.execute(text(f"DELETE FROM {table} WHERE kb_id = :k"), {"k": kb_id})
         session.execute(text("DELETE FROM kb_collection WHERE id = :k"), {"k": kb_id})
         session.commit()
-    root = Path(get_settings().storage_dir)
-    for uri in uris:
-        f = root / uri
-        if f.is_file():
-            f.unlink()
 
 
 def build_pdf(page_texts: list[str]) -> bytes:

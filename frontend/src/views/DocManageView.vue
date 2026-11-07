@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import PipelineNodes from '../components/PipelineNodes.vue'
 import { api } from '../api.js'
-import { deleteDoc, handleError, isAdmin, reindexAll, store, updateDoc } from '../store.js'
+import { deleteDoc, handleError, isAdmin, reindexAll, store, updateDoc, uploadDoc } from '../store.js'
 
 /* 文档管理：归属个人/某组织 + 公开/私有；清单只含当前用户可见的文档；
    上传者本人与管理员可修改归属/可见性（即时影响检索范围） */

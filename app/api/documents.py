@@ -12,30 +12,71 @@ public → 所有人；private+org_tag → 上传者与组织成员；private �
 from __future__ import annotations
 
 import hashlib
-from pathlib import Path, PurePosixPath
+import json
+from pathlib import PurePosixPath
+from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, Header, Query, UploadFile
 from fastapi.responses import JSONResponse
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import delete, func, or_, select, text, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import PrincipalDep, SessionDep, SettingsDep, require_kb_access
-from app.api.idempotency import idempotency_store
 from app.core.auth import Principal
 from app.core.config import Settings
-from app.core.errors import Conflict, Forbidden, NotFound, ValidationFailed
+from app.core.errors import AppError, Conflict, Forbidden, NotFound, ValidationFailed
 from app.db.models import IngestJob, KbChunk, KbCollection, KbDocument, KbDocumentVersion, OrgTag
 from app.db.spaces import get_or_create_main_space
+from app.db.upload_guard import upload_idempotency, upload_object_guard
 from app.parsers.base import check_size, detect_format
-from app.parsers.intake import save_upload
 from app.schemas.api import (
     DocumentItem,
     DocumentPatchRequest,
     DocumentUploaded,
     GlobalDocumentListResponse,
 )
+from app.storage import MinioStorage, StorageError, build_object_key, object_uri
 
 router = APIRouter()
+
+
+def _hash_json(value: list) -> str:
+    """避免拼接分隔符歧义，并保持 Unicode 原文不变。"""
+    return hashlib.sha256(
+        json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _lock_live_kb(session: Session, kb_id: int) -> None:
+    """与知识库删除串行复核目标库；不存在或已删除即拒绝继续。"""
+    row = session.execute(
+        select(KbCollection.id, KbCollection.deleted_at)
+        .where(KbCollection.id == kb_id)
+        .with_for_update()
+    ).one_or_none()
+    if row is None or row[1] is not None:
+        raise Conflict("知识库不存在或已删除，无法继续上传")
+
+
+def _replacement_document_ids(session: Session, uri: str) -> list[int]:
+    """以固定顺序锁定所有共用同 URI 的文档，避免并发整库替换死锁。"""
+    return list(
+        session.execute(
+            select(KbDocument.id)
+            .where(
+                KbDocument.id.in_(
+                    select(KbDocumentVersion.document_id).where(
+                        KbDocumentVersion.storage_uri == uri
+                    )
+                ),
+                KbDocument.deleted_at.is_(None),
+            )
+            .order_by(KbDocument.id)
+            .with_for_update()
+        ).scalars().all()
+    )
 
 
 def create_document_record(
@@ -53,112 +94,259 @@ def create_document_record(
     idempotency_key: str | None,
     route: str,
 ) -> DocumentUploaded | JSONResponse:
-    """上传登记共享核心（/documents 与 /kbs/{id}/documents 共用）。
+    """先持久阻断同键并使全部旧引用失效，再删、传、登记。
 
-    幂等键回放、SHA-256 重复检测、文档+版本落库、data_revision 递增与
-    ingest_file 任务创建在同一请求内完成；任务 payload 携带 uploader_user_id
-    供无成员身份的上传者轮询进度。
+    writing 是永久屏障而非租约。任何远程请求异常、进程退出或最终提交
+    不确定都不能自动重试或删除对象；需由运维确认远程请求已结束后处理。
     """
-    request_digest = hashlib.sha256(
-        b"|".join(
-            [
-                str(principal.user_id).encode(),
-                str(kb.id).encode(),
-                filename.encode("utf-8", "replace"),
-                len(payload).to_bytes(8, "big"),
-                hashlib.sha256(payload).digest(),
-            ]
-        )
-    ).hexdigest()
+    if session.get_bind().dialect.name != "postgresql":
+        raise AppError("上传需要 PostgreSQL 行锁", status_code=503, retryable=False)
+    if session.scalar(text("SHOW transaction_isolation")) != "read committed":
+        raise AppError("上传需要 read committed 事务隔离级别", status_code=503, retryable=False)
+    if visibility not in ("private", "public"):
+        raise ValidationFailed("visibility 仅支持 private / public")
+    if idempotency_key is not None and (not idempotency_key or len(idempotency_key) > 512):
+        raise ValidationFailed("Idempotency-Key 长度须为 1 至 512 个字符")
+    if len(route) > 200:
+        raise ValidationFailed("上传路由无效")
+    try:
+        key = build_object_key(principal.user_id, filename)
+        uri = object_uri(settings.minio_bucket, key)
+    except ValueError as exc:
+        raise ValidationFailed(str(exc)) from None
+    title = PurePosixPath(filename).stem
+    if len(title) > 300:
+        raise ValidationFailed("文件名不含扩展名部分超过 300 个字符")
 
-    if idempotency_key:
-        outcome, record = idempotency_store.check(
-            key=idempotency_key, user_id=principal.user_id, route=route, digest=request_digest
-        )
-        if outcome == "replay":
-            return JSONResponse(
-                status_code=record.status_code,
-                content=record.body,
-                headers={"Idempotent-Replay": "true"},
+    kb_id = kb.id
+    digest = hashlib.sha256(payload).digest()
+    request_digest = _hash_json(
+        [principal.tenant_id, principal.user_id, kb_id, org_tag_id, visibility,
+         filename, content_type, fmt, digest.hex()]
+    )
+    identity_hash = (
+        _hash_json([principal.user_id, route, idempotency_key])
+        if idempotency_key is not None else None
+    )
+    uri_hash = hashlib.sha256(uri.encode("utf-8")).hexdigest()
+    token = uuid4().hex
+
+    try:
+        if identity_hash is not None:
+            session.execute(
+                insert(upload_idempotency).values(
+                    identity_hash=identity_hash, user_id=principal.user_id, route=route,
+                    request_key=idempotency_key, request_digest=request_digest,
+                    state="pending", token=token,
+                ).on_conflict_do_nothing(index_elements=["identity_hash"])
             )
-        if outcome == "conflict":
-            raise Conflict("相同 Idempotency-Key 但请求内容不同")
+            idem = session.execute(
+                select(upload_idempotency).where(
+                    upload_idempotency.c.identity_hash == identity_hash
+                ).with_for_update()
+            ).mappings().one()
+            if (idem["user_id"], idem["route"], idem["request_key"]) != (
+                principal.user_id, route, idempotency_key
+            ) or idem["request_digest"] != request_digest:
+                raise Conflict("相同 Idempotency-Key 但请求内容不同")
+            if idem["state"] == "completed":
+                body = DocumentUploaded(
+                    job_id=idem["job_id"], document_id=idem["document_id"],
+                    version_no=idem["version_no"], kb_id=idem["kb_id"],
+                )
+                session.rollback()
+                return JSONResponse(
+                    status_code=202, content=body.model_dump(),
+                    headers={"Idempotent-Replay": "true"},
+                )
+            if idem["token"] != token:
+                raise Conflict("该幂等请求尚未完成或结果不确定，需人工核查")
 
-    # 文件级 SHA-256 重复检测（实现文档 §4.4）：同一空间内已有相同内容的
-    # 未删除文件时不再重复登记与索引
-    payload_digest = hashlib.sha256(payload).digest()
-    duplicate_version = session.execute(
-        select(KbDocumentVersion)
-        .join(KbDocument, KbDocument.id == KbDocumentVersion.document_id)
-        .where(
-            KbDocumentVersion.kb_id == kb.id,
-            KbDocumentVersion.file_sha256 == payload_digest,
-            KbDocument.deleted_at.is_(None),
+        # 构造客户端不发网络请求；配置失败则回滚未提交的幂等行。
+        try:
+            storage = MinioStorage(settings)
+        except StorageError:
+            raise AppError("对象存储配置不可用", status_code=503, retryable=False) from None
+        # 若 SDK 隐藏重试超时的 DELETE，第一次请求可能迟到并删除后续 PUT。
+        # 未明确保证禁用全部对象写入重试时必须 fail closed，不触碰旧记录或对象。
+        if getattr(storage, "safe_mutation_no_retry", False) is not True:
+            raise AppError(
+                "对象存储未保证禁用写入自动重试，暂不支持安全上传",
+                status_code=503, retryable=False,
+            )
+
+        session.execute(
+            insert(upload_object_guard).values(
+                uri_hash=uri_hash, uri=uri, state="ready", token=None
+            ).on_conflict_do_nothing(index_elements=["uri_hash"])
         )
-        .limit(1)
-    ).scalar_one_or_none()
-    if duplicate_version is not None:
+        guard = session.execute(
+            select(upload_object_guard).where(
+                upload_object_guard.c.uri_hash == uri_hash
+            ).with_for_update()
+        ).mappings().one()
+        if guard["uri"] != uri:
+            raise Conflict("对象标识冲突，不能上传")
+        if guard["state"] != "ready":
+            raise Conflict("同名对象正在处理或结果不确定，需人工核查")
+        # 持住屏障后复核目标知识库：删除端点同样原子更新，二者串行。
+        _lock_live_kb(session, kb_id)
+        session.execute(
+            update(upload_object_guard).where(
+                upload_object_guard.c.uri_hash == uri_hash
+            ).values(state="writing", token=token)
+        )
+
+        # 不仅查当前版本，也不按知识库过滤：任何旧版本共用此 key 都会被改写。
+        # 固定 ID 顺序加锁，跨 key 并发替换不会形成互锁等待。
+        stale_ids = _replacement_document_ids(session, uri)
+        affected = []
+        if stale_ids:
+            affected = session.execute(
+                update(KbDocument)
+                .where(KbDocument.id.in_(stale_ids), KbDocument.deleted_at.is_(None))
+                .values(deleted_at=func.now()).returning(KbDocument.kb_id)
+                .execution_options(synchronize_session=False)
+            ).scalars().all()
+        for affected_kb_id in sorted(set(affected)):
+            session.execute(
+                update(KbCollection).where(KbCollection.id == affected_kb_id)
+                .values(data_revision=KbCollection.data_revision + 1)
+                .execution_options(synchronize_session=False)
+            )
+            session.add(IngestJob(
+                kb_id=affected_kb_id, job_type="reindex",
+                payload_json={"reason": "object_replaced"},
+            ))
+        # 此提交必须成功返回，才能操作对象存储。
+        session.commit()
+    except AppError:
+        session.rollback()
+        raise
+    except Exception:
+        session.rollback()
+        raise AppError(
+            "无法确认上传屏障提交，未发起对象写入，请核查后重试",
+            status_code=503, retryable=False,
+        ) from None
+
+    try:
+        # DELETE 对不存在的 key 也有效，确保不依赖可能过时的存在性检查。
+        storage.delete(uri)
+        returned_uri = storage.put(
+            key, payload, content_type=content_type or "application/octet-stream"
+        )
+        if returned_uri != uri:
+            raise ValueError("对象 URI 不一致")
+    except Exception:
+        # 请求可能仍在服务端运行：不补偿、不自动释放，也不尝试再次 DELETE。
+        raise AppError(
+            "对象存储操作失败或结果不确定；同名对象已阻断，需人工核查",
+            status_code=503, retryable=False,
+        ) from None
+
+    try:
+        # 与准备事务按相同顺序持锁，避免重试请求与完成事务反向死锁。
+        if identity_hash is not None:
+            idem = session.execute(
+                select(upload_idempotency).where(
+                    upload_idempotency.c.identity_hash == identity_hash
+                ).with_for_update()
+            ).mappings().one()
+            if idem["state"] != "pending" or idem["token"] != token:
+                raise Conflict("上传幂等状态已改变，无法登记")
+        guard = session.execute(
+            select(upload_object_guard).where(
+                upload_object_guard.c.uri_hash == uri_hash
+            ).with_for_update()
+        ).mappings().one()
+        if guard["uri"] != uri or guard["state"] != "writing" or guard["token"] != token:
+            raise Conflict("对象写入屏障已改变，无法登记")
+        # PUT 成功与目标知识库删除并发时不能登记。此分支状态完全已知：对象已在桶中
+        # 但无文档引用，属可重复触发的同键先删后传语义；释放屏障供运维/后续同名上传清理。
+        try:
+            _lock_live_kb(session, kb_id)
+        except Conflict:
+            session.execute(
+                update(upload_object_guard)
+                .where(
+                    upload_object_guard.c.uri_hash == uri_hash,
+                    upload_object_guard.c.state == "writing",
+                    upload_object_guard.c.token == token,
+                )
+                .values(state="ready", token=None)
+            )
+            if identity_hash is not None:
+                session.execute(
+                    delete(upload_idempotency).where(
+                        upload_idempotency.c.identity_hash == identity_hash
+                    )
+                )
+            session.commit()
+            raise AppError(
+                "知识库已在上传期间删除：对象已写入但未登记，同键后续上传将先删除它",
+                status_code=409, retryable=False,
+            ) from None
+        document = KbDocument(
+            kb_id=kb_id, title=title, uploader_user_id=principal.user_id,
+            visibility=visibility, org_tag_id=org_tag_id,
+        )
+        session.add(document)
+        session.flush()
+        version = KbDocumentVersion(
+            kb_id=kb_id, document_id=document.id, version_no=1, title=title,
+            file_sha256=digest, storage_uri=uri, parse_status="pending",
+        )
+        session.add(version)
+        session.flush()
+        job = IngestJob(
+            kb_id=kb_id, doc_version_id=version.id, job_type="ingest_file",
+            payload_json={
+                "filename": filename, "content_type": content_type, "format": fmt,
+                "uploader_user_id": principal.user_id,
+            },
+        )
+        session.add(job)
+        session.flush()
+        session.execute(
+            update(KbCollection).where(KbCollection.id == kb_id)
+            .values(data_revision=KbCollection.data_revision + 1)
+            .execution_options(synchronize_session=False)
+        )
+        result = session.execute(
+            update(upload_object_guard).where(
+                upload_object_guard.c.uri_hash == uri_hash,
+                upload_object_guard.c.state == "writing", upload_object_guard.c.token == token,
+            ).values(state="ready", token=None)
+        )
+        if result.rowcount != 1:
+            raise Conflict("对象写入屏障已改变，无法登记")
         body = DocumentUploaded(
-            job_id=None,
-            document_id=duplicate_version.document_id,
-            version_no=duplicate_version.version_no,
-            kb_id=kb.id,
-            duplicate=True,
+            job_id=job.id, document_id=document.id, version_no=version.version_no, kb_id=kb_id
         )
-        return JSONResponse(status_code=200, content=body.model_dump())
-
-    storage_uri, sha_hex = save_upload(
-        payload, fmt, upload_dir=Path(settings.storage_dir) / "uploads"
-    )
-    title = PurePosixPath(filename).stem or "未命名文档"
-    document = KbDocument(
-        kb_id=kb.id,
-        title=title,
-        uploader_user_id=principal.user_id,
-        visibility=visibility,
-        org_tag_id=org_tag_id,
-    )
-    session.add(document)
-    session.flush()
-    version = KbDocumentVersion(
-        kb_id=kb.id,
-        document_id=document.id,
-        version_no=1,
-        title=title,
-        file_sha256=bytes.fromhex(sha_hex),
-        storage_uri=storage_uri,
-        parse_status="pending",
-    )
-    session.add(version)
-    kb.data_revision += 1  # 新文件加入清单：与登记同一事务递增（实现文档 §5.3）
-    session.flush()
-    job = IngestJob(
-        kb_id=kb.id,
-        doc_version_id=version.id,
-        job_type="ingest_file",
-        payload_json={
-            "filename": filename,
-            "content_type": content_type,
-            "format": fmt,
-            "uploader_user_id": principal.user_id,
-        },
-    )
-    session.add(job)
-    session.commit()
-
-    body = DocumentUploaded(
-        job_id=job.id, document_id=document.id, version_no=version.version_no, kb_id=kb.id
-    )
-    if idempotency_key:
-        idempotency_store.save(
-            key=idempotency_key,
-            user_id=principal.user_id,
-            route=route,
-            digest=request_digest,
-            status_code=202,
-            body=body.model_dump(),
-        )
-    return body
+        if identity_hash is not None:
+            result = session.execute(
+                update(upload_idempotency).where(
+                    upload_idempotency.c.identity_hash == identity_hash,
+                    upload_idempotency.c.state == "pending", upload_idempotency.c.token == token,
+                ).values(
+                    state="completed", token=None, job_id=job.id, document_id=document.id,
+                    version_no=version.version_no, kb_id=kb_id,
+                )
+            )
+            if result.rowcount != 1:
+                raise Conflict("上传幂等状态已改变，无法登记")
+        session.commit()
+        return body
+    except AppError:
+        session.rollback()
+        raise
+    except Exception:
+        session.rollback()
+        raise AppError(
+            "对象已上传，但数据库登记结果不确定；请勿重试，需人工核查",
+            status_code=503, retryable=False,
+        ) from None
 
 
 def _resolve_org_scope(session: Session, principal: Principal, scope: str) -> int | None:
@@ -195,7 +383,8 @@ async def upload_document(
     fmt = detect_format(filename, file.content_type, payload)  # 422
     org_tag_id = _resolve_org_scope(session, principal, scope)
     kb = get_or_create_main_space(session)
-    return create_document_record(
+    return await run_in_threadpool(
+        create_document_record,
         session=session,
         principal=principal,
         settings=settings,
@@ -346,9 +535,12 @@ def update_document(
         .where(KbChunk.document_id == document.id, KbChunk.kb_id == document.kb_id)
         .values(org_tag_id=document.org_tag_id, visibility=document.visibility)
     )
-    # 授权变化：递增 acl_revision 使运行时索引缓存失效重载
-    kb = session.get(KbCollection, document.kb_id)
-    kb.acl_revision += 1
+    # 授权变化：原子递增 acl_revision，避免丢失并发授权变更。
+    session.execute(
+        update(KbCollection)
+        .where(KbCollection.id == document.kb_id)
+        .values(acl_revision=KbCollection.acl_revision + 1)
+    )
     session.commit()
 
     row = _load_document_row(session, document_id)

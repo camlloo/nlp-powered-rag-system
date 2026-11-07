@@ -6,7 +6,7 @@ from alembic import context
 from sqlalchemy import create_engine, pool
 
 from app.core.config import get_settings
-from app.db import models  # noqa: F401  确保模型注册到 metadata
+from app.db import models, upload_guard  # noqa: F401  确保表注册到 metadata
 from app.db.base import Base
 
 config = context.config
