@@ -80,6 +80,10 @@ class Settings(BaseSettings):
     retrieval_question_max_chars: int = 2000  # 超限 422，不静默截断
     history_max_rounds: int = 3
 
+    # 生成上下文预算（实现文档 §8.1：项目预算，非模型上下文上限；token 按 UTF-8 字节保守估算）
+    context_evidence_budget_tokens: int = 6000
+    context_history_budget_tokens: int = 1500
+
     chunk_max_chars: int = 700
     chunk_overlap_chars: int = 100
     chunk_hard_max_chars: int = 1000

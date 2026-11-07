@@ -1,1 +1,1 @@
-"""Evidence-based answer generation package placeholder."""
+"""Evidence-based answer generation with citation validation (§8)."""
