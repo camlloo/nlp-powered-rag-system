@@ -99,6 +99,20 @@ class ServiceUnavailable(AppError):
     retryable = True
 
 
+class UnsupportedFormat(AppError):
+    status_code = 422
+    code = "unsupported_format"
+    default_message = "不支持的文件格式"
+
+
+class NeedsReview(AppError):
+    """文件可解析但质量不足：转 needs_review，不发布索引（实现文档 §4.1）。"""
+
+    status_code = 422
+    code = "needs_review"
+    default_message = "文件解析质量不足"
+
+
 def _error_response(status_code: int, body: dict) -> JSONResponse:
     return JSONResponse(status_code=status_code, content=body)
 

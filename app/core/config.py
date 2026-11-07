@@ -55,7 +55,36 @@ class Settings(BaseSettings):
 
     chunk_max_chars: int = 700
     chunk_overlap_chars: int = 100
+    chunk_hard_max_chars: int = 1000
+    chunk_min_chars: int = 120
     max_upload_bytes: int = 20 * 1024 * 1024
+    # 向量输入前缀（文档标题+标题路径）长度上限（实现文档 §4.5/§6.1）
+    embedding_title_prefix_chars: int = 100
+
+    # 解析限制与回退（实现文档 §4.1）；解析超时 120s 由 worker 层执行
+    fallback_encoding: str = "gb18030"
+    max_pdf_pages: int = 300
+    docx_zip_guard_bytes: int = 200 * 1024 * 1024
+    # PDF 质量阈值：低质量转 needs_review，不发布索引（阈值需用真实样本校准）
+    pdf_min_readable_ratio: float = 0.7
+    pdf_max_abnormal_ratio: float = 0.1
+    pdf_min_page_chars: int = 20
+
+    @field_validator("chunk_hard_max_chars")
+    @classmethod
+    def _check_chunk_bounds(cls, value: int, info) -> int:
+        max_chars = info.data.get("chunk_max_chars")
+        if max_chars is not None and value < max_chars:
+            raise ValueError("CHUNK_HARD_MAX_CHARS 不能小于 CHUNK_MAX_CHARS")
+        return value
+
+    @field_validator("chunk_min_chars")
+    @classmethod
+    def _check_chunk_min(cls, value: int, info) -> int:
+        max_chars = info.data.get("chunk_max_chars")
+        if max_chars is not None and value >= max_chars:
+            raise ValueError("CHUNK_MIN_CHARS 必须小于 CHUNK_MAX_CHARS")
+        return value
 
     @field_validator("embedding_dim")
     @classmethod
