@@ -102,6 +102,7 @@ async def execute_claimed(
     session_factory: sessionmaker,
     worker_id: str,
     lease_seconds: int,
+    settings=None,
 ) -> None:
     lease = LeaseKeeper(session_factory, worker_id, lease_seconds)
     lease.bind(job.id)
@@ -110,6 +111,14 @@ async def execute_claimed(
             new_doc_version_id = job.doc_version_id if job.job_type == "ingest_file" else None
             await builder.build(
                 kb_id=job.kb_id, new_doc_version_id=new_doc_version_id, lease=lease
+            )
+        elif job.job_type == "cleanup":
+            from app.indexing.cleanup import cleanup_kb_scope
+
+            cleanup_kb_scope(
+                session_factory,
+                settings or get_settings(),
+                kb_id=job.kb_id,
             )
         else:
             finish_job(
@@ -181,6 +190,7 @@ async def run_worker_loop(*, once: bool = False, max_jobs: int | None = None) ->
             session_factory=SessionLocal,
             worker_id=WORKER_ID,
             lease_seconds=settings.worker_lease_seconds,
+            settings=settings,
         )
         processed += 1
         if once:

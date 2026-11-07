@@ -70,3 +70,15 @@ def load_upload(storage_uri: str, settings: Settings) -> bytes:
     if not target.is_file():
         raise FileNotFoundError(f"存储文件不存在：{storage_uri}")
     return target.read_bytes()
+
+
+def delete_upload(storage_uri: str, settings: Settings) -> bool:
+    """物理删除原始文件（物理清理阶段调用）；返回是否实际删除。"""
+    root = Path(settings.storage_dir).resolve()
+    target = (root / storage_uri).resolve()
+    if not target.is_relative_to(root):
+        raise ValueError(f"非法存储路径：{storage_uri}")
+    if target.is_file():
+        target.unlink()
+        return True
+    return False

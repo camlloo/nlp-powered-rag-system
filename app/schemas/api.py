@@ -13,10 +13,33 @@ class KbCreated(BaseModel):
 
 
 class DocumentUploaded(BaseModel):
-    job_id: int
+    job_id: int | None  # 重复上传（SHA-256 命中）时为 None
     document_id: int
     version_no: int
     kb_id: int
+    duplicate: bool = False
+
+
+class DocumentItem(BaseModel):
+    document_id: int
+    title: str
+    version_no: int
+    parse_status: str
+    deleted_at: object | None = None
+    created_at: object | None = None
+
+
+class DocumentListResponse(BaseModel):
+    kb_id: int
+    total: int
+    items: list[DocumentItem]
+
+
+class DocumentDeleted(BaseModel):
+    document_id: int
+    deleted_at: object
+    reindex_job_id: int
+    cleanup_job_id: int
 
 
 class ReindexAccepted(BaseModel):

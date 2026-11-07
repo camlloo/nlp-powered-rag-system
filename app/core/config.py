@@ -84,6 +84,9 @@ class Settings(BaseSettings):
     context_evidence_budget_tokens: int = 6000
     context_history_budget_tokens: int = 1500
 
+    # 物理清理（实现文档 §5.3：软删除与旧快照按保留策略异步物理清除）
+    cleanup_retention_hours: int = 24
+
     chunk_max_chars: int = 700
     chunk_overlap_chars: int = 100
     chunk_hard_max_chars: int = 1000
