@@ -8,6 +8,7 @@ from fastapi import APIRouter
 
 from app.api.deps import PrincipalDep, SessionDep, require_kb_access
 from app.core.config import get_settings
+from app.db.spaces import get_or_create_main_space
 from app.gateways.factory import get_embedding_gateway
 from app.indexing.cache import get_index_cache
 from app.retrieval.service import RetrievalService
@@ -25,12 +26,16 @@ router = APIRouter()
 async def retrieval_debug(
     payload: RetrievalDebugRequest, session: SessionDep, principal: PrincipalDep
 ) -> RetrievalDebugResponse:
-    require_kb_access(kb_id=payload.kb_id, session=session, principal=principal)
+    kb_id = payload.kb_id
+    if kb_id is None:
+        kb_id = get_or_create_main_space(session).id
+    else:
+        require_kb_access(kb_id=kb_id, session=session, principal=principal)
     service = RetrievalService(
         get_index_cache(), get_embedding_gateway(), get_settings()
     )
     result = await service.retrieve(
-        kb_id=payload.kb_id,
+        kb_id=kb_id,
         tenant_id=principal.tenant_id,
         question=payload.question,
         history=[item.model_dump() for item in payload.history],

@@ -1,42 +1,137 @@
-"""首期最小认证：静态 API Token。
+"""认证与授权核心：用户口令（scrypt）、JWT 签发、访问主体。
 
-实现文档 §5.3：首期不实现独立用户体系与 RBAC；tenant_id 和 user_id 从服务端
-凭证解析，不信任请求体中的同名字段。后期引入 JWT 时，仅需替换本模块的凭证
-解析逻辑，统一授权校验点（app/api/deps.py 的 require_kb_access）不变。
+- 静态 API Token 保留为管理员旁路（脚本与旧测试兼容）；
+- 用户体系：/auth/login 签发 JWT（HS256，7 天）；
+- Principal 携带组织标签，供检索级可见性过滤使用；
+- RBAC 角色（kb_member.role）：owner > editor > viewer。
 """
 
 from __future__ import annotations
 
+import hashlib
 import hmac
-from dataclasses import dataclass
+import secrets
+from dataclasses import dataclass, field
 
-from fastapi import Request
+import jwt
 
-from app.core.config import Settings
-from app.core.errors import Unauthorized
+from app.core.config import Settings, get_settings
 
-PRINCIPAL_NOTE = "预留：JWT RBAC 启用后在此携带角色信息"
+ROLE_ORDER = {"viewer": 0, "editor": 1, "owner": 2}
 
 
-@dataclass(frozen=True)
+def role_at_least(role: str | None, min_role: str) -> bool:
+    return ROLE_ORDER.get(role or "", -1) >= ROLE_ORDER[min_role]
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=2**14, r=8, p=1, dklen=32)
+    return f"scrypt${salt.hex()}${digest.hex()}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    try:
+        scheme, salt_hex, digest_hex = stored.split("$")
+        if scheme != "scrypt":
+            return False
+        digest = hashlib.scrypt(
+            password.encode("utf-8"), salt=bytes.fromhex(salt_hex), n=2**14, r=8, p=1, dklen=32
+        )
+        return hmac.compare_digest(digest, bytes.fromhex(digest_hex))
+    except (ValueError, TypeError):
+        return False
+
+
+def issue_jwt(user_id: int, username: str, settings: Settings) -> str:
+    import datetime as dt
+
+    payload = {
+        "sub": str(user_id),
+        "username": username,
+        "exp": dt.datetime.now(dt.UTC) + dt.timedelta(days=settings.jwt_expire_days),
+    }
+    return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
+
+
+@dataclass
 class Principal:
+    """已认证访问主体：静态令牌旁路 = 预置管理员；用户体系 = JWT 解出。"""
+
     tenant_id: int
     user_id: int
-    # 预留字段：后期 JWT 解出 role（owner/editor/viewer）后填充
-    role: str = "owner"
+    username: str
+    is_admin: bool = False
+    org_tag_ids: set[int] = field(default_factory=set)
+    org_tag_names: list[str] = field(default_factory=list)
+
+    def can_see_all(self) -> bool:
+        """管理员旁路：检索过滤与角色门全部放行。"""
+        return self.is_admin
 
 
-def _extract_token(request: Request) -> str | None:
+def get_admin_principal() -> Principal:
+    settings = get_settings()
+    return Principal(
+        tenant_id=settings.default_tenant_id,
+        user_id=settings.default_user_id,
+        username=settings.admin_username,
+        is_admin=True,
+    )
+
+
+def _extract_static_token(request) -> str | None:
     header = request.headers.get("authorization", "")
     if header.lower().startswith("bearer "):
         return header[7:].strip() or None
     return request.headers.get("x-api-token") or None
 
 
-def get_principal(request: Request, settings: Settings) -> Principal:
-    token = _extract_token(request)
-    if not settings.api_token:
-        raise Unauthorized("服务未配置 API_TOKEN，拒绝访问")
-    if not token or not hmac.compare_digest(token, settings.api_token):
+def authenticate(request) -> Principal:
+    """请求 → Principal：JWT 优先，静态令牌旁路，均失败抛 401。"""
+    import jwt as pyjwt
+
+    from app.core.errors import Unauthorized
+    from app.db.models import AppUser, OrgTag, UserOrgTag
+    from app.db.session import SessionLocal
+
+    settings = get_settings()
+
+    static_token = _extract_static_token(request)
+    api_ok = (
+        static_token
+        and settings.api_token
+        and hmac.compare_digest(static_token, settings.api_token)
+    )
+    if api_ok:
+        return get_admin_principal()
+
+    auth_header = request.headers.get("authorization", "")
+    token = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else None
+    if not token:
         raise Unauthorized()
-    return Principal(tenant_id=settings.default_tenant_id, user_id=settings.default_user_id)
+
+    try:
+        payload = pyjwt.decode(token, settings.jwt_secret, algorithms=["HS256"])
+    except pyjwt.PyJWTError as exc:
+        raise Unauthorized("访问令牌无效或已过期") from exc
+
+    user_id = int(payload.get("sub", "0"))
+    with SessionLocal() as session:
+        user = session.get(AppUser, user_id)
+        if user is None:
+            raise Unauthorized("用户不存在")
+        org_rows = session.execute(
+            __import__("sqlalchemy")
+            .select(OrgTag.id, OrgTag.name)
+            .join(UserOrgTag, UserOrgTag.org_tag_id == OrgTag.id)
+            .where(UserOrgTag.user_id == user.id)
+        ).all()
+    return Principal(
+        tenant_id=settings.default_tenant_id,
+        user_id=user.id,
+        username=user.username,
+        is_admin=user.is_admin,
+        org_tag_ids={row[0] for row in org_rows},
+        org_tag_names=[row[1] for row in org_rows],
+    )

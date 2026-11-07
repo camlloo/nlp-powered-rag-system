@@ -8,6 +8,7 @@ import asyncio
 
 import pytest
 
+from app.core.auth import get_admin_principal
 from app.core.config import Settings
 from app.db.models import KbCollection, KbDocument, KbDocumentVersion
 from app.db.session import SessionLocal
@@ -167,13 +168,15 @@ def test_qa_end_to_end_on_eval_corpus(eval_kb):
     chat = MockChatGateway()
     service = QaService(retrieval, chat, settings)
     answered = asyncio.run(
-        service.ask(kb_id=kb_id, tenant_id=1, user_id=1, question="报销应该在多少天内申请？")
+        service.ask(
+            kb_id=kb_id, principal=get_admin_principal(), question="报销应该在多少天内申请？"
+        )
     )
     assert answered.status == "answered"
     empty_kb = create_kb()
     try:
         rejected = asyncio.run(
-            service.ask(kb_id=empty_kb, tenant_id=1, user_id=1, question="年假有多少天？")
+            service.ask(kb_id=empty_kb, principal=get_admin_principal(), question="年假有多少天？")
         )
         assert rejected.status == "insufficient_evidence"
         assert chat.calls == [] or all(

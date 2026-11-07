@@ -13,9 +13,13 @@ RRF_CONSTANT = 60
 
 
 def dense_topk(
-    matrix: np.ndarray, chunk_ids: list[int], query_vector: np.ndarray, k: int = 50
+    matrix: np.ndarray,
+    chunk_ids: list[int],
+    query_vector: np.ndarray,
+    k: int = 50,
+    allowed_ids: set[int] | None = None,
 ) -> list[tuple[int, float]]:
-    """全库精确余弦召回 TopK（§7.3：独立于 BM25 的完整召回范围）。"""
+    """全库精确余弦召回 TopK；allowed_ids 做全库可见性掩码（非授权置 -inf）。"""
     if matrix.shape[0] != len(chunk_ids):
         raise ValueError("chunk alignment mismatch")
     if matrix.ndim != 2 or matrix.shape[1] != query_vector.size:
@@ -23,6 +27,9 @@ def dense_topk(
     if k <= 0 or not chunk_ids:
         return []
     scores = matrix @ query_vector
+    if allowed_ids is not None:
+        allowed = np.array([cid in allowed_ids for cid in chunk_ids])
+        scores = np.where(allowed, scores, np.float32(-np.inf))
     order = sorted(range(len(chunk_ids)), key=lambda i: (-float(scores[i]), chunk_ids[i]))
     return [(chunk_ids[i], float(scores[i])) for i in order[:k]]
 

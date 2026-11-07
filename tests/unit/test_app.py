@@ -17,7 +17,11 @@ def test_root_info():
     client = TestClient(app)
     resp = client.get("/")
     assert resp.status_code == 200
-    assert resp.json()["docs"] == "/docs"
+    if "text/html" in resp.headers.get("content-type", ""):
+        # 前端构建产物存在时根路径托管检索台
+        assert 'id="app"' in resp.text
+    else:
+        assert resp.json()["docs"] == "/docs"
 
 
 def test_error_envelope():

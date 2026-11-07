@@ -4,7 +4,9 @@
 
 使用传统 NLP 处理文档，以 PostgreSQL 16/17 + pgvector 统一存储业务数据和向量，向量模型为 `text-embedding-v4`，问答模型为 `qwen3.8-flash`。
 
-**当前进度**：开发计划 M0–M8 全部完成——配置/认证/日志/错误、PostgreSQL+pgvector 数据层、四格式解析与传统 NLP 流水线、模型网关（重试/预算/缓存）、快照构建与原子发布、worker 租约、BM25+向量双路检索与 RRF 融合、问答引用与审计、管理接口（列表/删除/清理）、评测 harness 与消融实验、备份恢复演练。206+ 项测试（单元 + 集成，无数据库自动跳过）。
+**数据组织（去知识库化）**：文档不设知识库，直接归属「个人」或「某组织」并设公开/私有——组织公开=所有人可检索；组织私有=上传者与该组织成员；个人公开=所有人；个人私有=仅上传者。问答面向当前用户可见的全部文档（内部由单一主空间承载，见 docs/部署与运维.md §5）。
+
+**当前进度**：开发计划 M0–M8 全部完成——配置/认证/日志/错误、PostgreSQL+pgvector 数据层、四格式解析与传统 NLP 流水线、模型网关（重试/预算/缓存）、快照构建与原子发布、worker 租约、BM25+向量双路检索与 RRF 融合、问答引用与审计、管理接口（列表/删除/清理）、评测 harness 与消融实验、备份恢复演练、传统后台管理界面（Vue3 + vue-router：任务（历史对话）/ 文档管理 / 组织标签 / 用户管理 / 系统设置；组织标签与用户管理接口 `/admin/*`）。249 项测试（单元 + 集成，无数据库自动跳过）。
 
 - **使用与部署**：见 [docs/部署与运维.md](docs/部署与运维.md)（上线步骤、环境变量速查、管理员操作、备份恢复演练、附录 C 检查表核对）。
 - **评测**：`tests/evaluation/` 提供评测集格式、指标 harness（Recall@5 / Hit@5 / MRR@10 / 拒答率）与消融实验；种子评测集 26 题用于回归，正式验收须以真实语料扩展至 ≥200 题人工标注（实现文档 §14.1）。
@@ -24,6 +26,9 @@
 8. 启动服务：`uv run uvicorn app.main:app --reload`
    - 接口文档 http://127.0.0.1:8000/docs
    - 健康检查 `GET /healthz`（存活）、`GET /readyz`（就绪，检查数据库与 pgvector 扩展）
+9. 启动前端（可选，开发模式）：`cd frontend && npm install && npm run dev`，访问 http://127.0.0.1:5173；
+   生产模式 `npm run build` 后由后端同源托管 `frontend/dist`，直接访问 http://127.0.0.1:8000
+10. 常驻 worker（上传文档/重建索引必需）：`uv run python -m app.workers`
 
 注：若 `127.0.0.1:5433` 连不上，用 `wsl hostname -I` 获取 WSL IP 填入 `.env` 的 `PG_HOST`。
 
@@ -37,17 +42,18 @@
 nlp-powered-rag-system/
 ├── app/
 │   ├── main.py           # FastAPI 入口与健康检查
-│   ├── api/              # 路由、依赖项（认证/授权校验点预留）知识库 文件 任务 检索 问答接口
+│   ├── api/              # 路由与依赖项：auth documents 知识库(内部) 任务 检索 问答 admin（管理面）
 │   ├── core/             # 配置 认证 日志 错误处理
 │   ├── db/               # ORM 模型 数据库会话
-│   ├── parsers/          # TXT Markdown DOCX PDF 文档解析（待实现）
-│   ├── nlp/              # 清洗 分句 分词 关键词 规则切块（待实现）
-│   ├── indexing/         # 索引构建 快照发布 缓存装载（待实现）
-│   ├── retrieval/        # BM25 向量召回 RRF 规则重排（待实现）
-│   ├── generation/       # 提示词 上下文 答案与引用校验（待实现）
-│   ├── gateways/         # 向量模型和问答模型适配（待实现）
-│   ├── workers/          # 导入任务 重试 清理（待实现）
-│   └── schemas/          # 请求 响应 内部数据契约（待实现）
+│   ├── parsers/          # TXT Markdown DOCX PDF 文档解析
+│   ├── nlp/              # 清洗 分句 分词 关键词 规则切块
+│   ├── indexing/         # 索引构建 快照发布 缓存装载
+│   ├── retrieval/        # BM25 向量召回 RRF 规则重排
+│   ├── generation/       # 提示词 上下文 答案与引用校验
+│   ├── gateways/         # 向量模型和问答模型适配
+│   ├── workers/          # 导入任务 重试 清理
+│   └── schemas/          # 请求 响应 内部数据契约
+├── frontend/             # Vue3 + Vite 传统后台（对话检索/文档管理/组织标签/用户管理/系统设置）
 ├── migrations/           # Alembic 迁移（0001 建表基线）
 ├── resources/
 │   ├── dictionaries/     # 领域词典
@@ -80,7 +86,7 @@ nlp-powered-rag-system/
 | 向量模型 | text-embedding-v4，1024 维 |
 | 问答模型 | qwen3.8-flash |
 | 模型接入 | 百炼 OpenAI 兼容接口 |
-| 前端 | Vue 3（后期实现），首期以 OpenAPI 文档调试 |
+| 前端 | Vue 3 + Vite 传统后台管理界面（任务/历史对话 · 文档管理 · 组织标签 · 用户管理 · 系统设置） |
 | 开发工具 | uv pytest Ruff |
 
 依赖在集成测试通过后锁定完整版本。设计约束与模块说明见 `docs/` 内的实现文档（V1.1）与开发计划。

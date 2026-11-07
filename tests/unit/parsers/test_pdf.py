@@ -81,6 +81,16 @@ def test_pdf_low_density_needs_review():
     assert any("密度" in reason for reason in parsed.quality.reasons)
 
 
+def test_pdf_dot_leader_toc_passes_quality():
+    """目录点线引导符在打分前折叠：不因空格噪声误判 needs_review，点号不进块。"""
+    toc = "Table of Contents\nChapter 1 Overview" + "  ." * 40 + " 6"
+    body = "HTML is the markup language for web pages. " * 20
+    parsed = parse_pdf(_build_pdf([toc, body, body]), "toc", Settings())
+    assert parsed.quality.needs_review is False
+    assert ". ." not in parsed.blocks[0].text
+    assert "Chapter 1 Overview 6" in parsed.blocks[0].text
+
+
 def test_merge_soft_wraps_sentence_punct():
     assert _merge_soft_wraps("出门检查门窗。\n第二天再确认。") == "出门检查门窗。\n第二天再确认。"
     assert _merge_soft_wraps("这是第一行没有句号\n第二行继续。") == "这是第一行没有句号第二行继续。"

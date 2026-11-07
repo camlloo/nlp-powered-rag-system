@@ -38,11 +38,15 @@ class Settings(BaseSettings):
     pg_user: str = "postgres"
     pg_password: str = "postgres"
 
-    # 首期静态 API Token；后期以 JWT RBAC 替换，授权校验点不变
+    # 认证：静态 API Token（管理员旁路）+ JWT 用户体系（scrypt 口令哈希 + HS256）
     api_token: str = ""
     default_tenant_id: int = 1
     default_user_id: int = 1
     cors_origins: str = "http://localhost:5173"
+    jwt_secret: str = "dev-jwt-secret-change-me"
+    jwt_expire_days: int = 7
+    admin_username: str = "admin"
+    admin_password: str = "admin123"
 
     # 模型网关配置；模型相关校验延迟到网关调用时进行
     model_base_url: str = ""

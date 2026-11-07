@@ -15,6 +15,7 @@ from app.gateways.budget import GLOBAL_SCOPE, BudgetTracker
 from app.gateways.embedding import TokenUsage
 from app.gateways.errors import (
     GenerationIncomplete,
+    GenerationUnavailable,
     ModelAuthError,
     ModelResponseInvalid,
 )
@@ -97,3 +98,70 @@ class ChatGateway:
         if self._budget:
             self._budget.add(tokens=usage.total_tokens, scope_id=budget_scope_id)
         return ChatResult(content, finish_reason, usage)
+
+    async def generate_stream(
+        self,
+        *,
+        system_prompt: str,
+        user_payload: str,
+        max_tokens: int | None = None,
+        budget_scope_id: str = GLOBAL_SCOPE,
+    ):
+        """流式生成：异步产出 {"delta": str, "finish_reason": str|None}。
+
+        - 重试只覆盖建连阶段（首块之前）；流开始后错误转为 GenerationUnavailable；
+        - 结束时校验 finish_reason；usage 优先经 stream_options 获取，
+          兼容端点不支持时退回无 stream_options 并按字符数记账。
+        """
+        if self._budget:
+            estimate = (len(system_prompt) + len(user_payload)) // 3 + 1
+            self._budget.ensure_within(estimated_tokens=estimate, scope_id=budget_scope_id)
+
+        async def _open(stream_options: dict | None):
+            return await self._client.chat.completions.create(
+                model=self._settings.chat_model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_payload},
+                ],
+                max_tokens=max_tokens or self._settings.chat_max_output_tokens,
+                extra_body={"enable_thinking": False},  # 实现文档 §8.3
+                stream=True,
+                **({"stream_options": stream_options} if stream_options else {}),
+            )
+
+        try:
+            stream = await with_retries(
+                lambda: _open({"include_usage": True}), settings=self._settings
+            )
+        except Exception as exc:  # noqa: BLE001  部分兼容端点不支持 stream_options
+            if "stream_options" in str(exc):
+                stream = await with_retries(lambda: _open(None), settings=self._settings)
+            else:
+                raise
+
+        total = 0
+        finish_reason = None
+        try:
+            async for chunk in stream:
+                choices = getattr(chunk, "choices", None)
+                if not choices:
+                    usage_chunk = getattr(chunk, "usage", None)
+                    if usage_chunk is not None:
+                        total = getattr(usage_chunk, "total_tokens", 0) or total
+                    continue
+                delta = choices[0].delta
+                piece = (getattr(delta, "content", None) or "") if delta else ""
+                finish_reason = getattr(choices[0], "finish_reason", None) or finish_reason
+                if piece:
+                    total += len(piece)
+                    yield {"delta": piece, "finish_reason": None}
+        except Exception as exc:  # noqa: BLE001
+            if isinstance(exc, (GenerationIncomplete, ModelResponseInvalid)):
+                raise
+            raise GenerationUnavailable(f"流式生成中断：{exc.__class__.__name__}") from exc
+
+        if finish_reason != "stop":
+            raise GenerationIncomplete(f"finish_reason={finish_reason}")
+        if self._budget:
+            self._budget.add(tokens=total, scope_id=budget_scope_id)

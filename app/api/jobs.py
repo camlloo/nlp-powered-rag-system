@@ -15,7 +15,12 @@ def get_job(job_id: int, session: SessionDep, principal: PrincipalDep) -> JobSta
     job = session.get(IngestJob, job_id)
     if job is None:
         raise NotFound("任务不存在")
-    require_kb_access(kb_id=job.kb_id, session=session, principal=principal)
+    # 放行：管理员 ∨ KB 成员 ∨ 任务发起者（payload.uploader_user_id，
+    # 去知识库化后上传者通常没有主空间成员身份）
+    if not principal.can_see_all():
+        actor_id = (job.payload_json or {}).get("uploader_user_id")
+        if actor_id != principal.user_id:
+            require_kb_access(kb_id=job.kb_id, session=session, principal=principal)
     return JobStatusResponse(
         job_id=job.id,
         kb_id=job.kb_id,

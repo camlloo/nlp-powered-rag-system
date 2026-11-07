@@ -17,6 +17,7 @@ from typing import Any
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     ForeignKey,
     ForeignKeyConstraint,
@@ -44,6 +45,46 @@ JOB_STAGES = ("parse", "normalize", "chunk", "embed", "validate", "publish")
 JOB_TYPES = ("ingest_file", "reindex", "cleanup")
 
 
+class AppUser(Base):
+    """用户（RBAC）：scrypt 口令哈希，管理员旁路静态令牌。"""
+
+    __tablename__ = "app_user"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    username: Mapped[str] = mapped_column(String(64), nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(200), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    is_admin: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    created_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
+
+    __table_args__ = (UniqueConstraint("username", name="uq_app_user_username"),)
+
+
+class OrgTag(Base):
+    """组织标签（如部门）：用户打标，文档随上传者继承。"""
+
+    __tablename__ = "org_tag"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
+
+    __table_args__ = (UniqueConstraint("name", name="uq_org_tag_name"),)
+
+
+class UserOrgTag(Base):
+    """用户-组织标签多对多。"""
+
+    __tablename__ = "user_org_tag"
+
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("app_user.id"), primary_key=True
+    )
+    org_tag_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("org_tag.id"), primary_key=True
+    )
+
+
 class KbCollection(Base):
     __tablename__ = "kb_collection"
 
@@ -54,6 +95,7 @@ class KbCollection(Base):
     active_index_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     data_revision: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
     acl_revision: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
+    deleted_at: Mapped[datetime | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
 
     __table_args__ = (Index("idx_kb_tenant", "tenant_id", "id"),)
@@ -85,9 +127,16 @@ class KbDocument(Base):
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     current_version_no: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
     deleted_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # 权限与组织标签：上传时随上传者写入，检索级过滤依据
+    uploader_user_id: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="1"
+    )
+    visibility: Mapped[str] = mapped_column(String(16), nullable=False, server_default="public")
+    org_tag_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("kb_id", "id", name="uq_kb_document_kb_id"),
+        CheckConstraint("visibility IN ('private','public')", name="ck_kb_document_visibility"),
     )
 
 
@@ -157,11 +206,19 @@ class KbChunk(Base):
     tokens: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
     keywords: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
     source_locator: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    # 冗余权限列：与向量同批写入，检索级过滤零 JOIN
+    uploader_user_id: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="1"
+    )
+    visibility: Mapped[str] = mapped_column(String(16), nullable=False, server_default="public")
+    org_tag_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     __table_args__ = (
         UniqueConstraint(
             "index_id", "doc_version_id", "chunk_no", name="uq_kb_chunk_index_id"
         ),
+        CheckConstraint("visibility IN ('private','public')", name="ck_kb_chunk_visibility"),
+        Index("idx_kb_chunk_visibility", "kb_id", "visibility", "org_tag_id"),
         ForeignKeyConstraint(
             ["kb_id", "index_id"],
             ["kb_index.kb_id", "kb_index.id"],
@@ -221,6 +278,21 @@ class IngestJob(Base):
     )
 
 
+class Conversation(Base):
+    """任务/会话：多轮问答的分组，供前端任务列表展示与历史还原。"""
+
+    __tablename__ = "conversation"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    title: Mapped[str] = mapped_column(String(120), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
+
+    __table_args__ = (Index("idx_conversation_user_time", "user_id", "updated_at"),)
+
+
 class QaRequest(Base):
     """问答审计：不设跨表外键，保证审计记录独立于业务数据清理。"""
 
@@ -232,6 +304,8 @@ class QaRequest(Base):
     user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     kb_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     index_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # 会话分组（审计表无外键：会话删除后保留为悬空历史值）
+    conversation_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     question: Mapped[str] = mapped_column(Text, nullable=False)
     answer_status: Mapped[str] = mapped_column(String(32), nullable=False)
     retrieval_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -245,6 +319,7 @@ class QaRequest(Base):
     __table_args__ = (
         UniqueConstraint("request_id", name="uq_qa_request_request_id"),
         Index("idx_qa_request_kb_time", "kb_id", "created_at"),
+        Index("idx_qa_request_conversation", "conversation_id", "id"),
     )
 
 

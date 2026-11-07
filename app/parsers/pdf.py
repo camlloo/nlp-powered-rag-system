@@ -14,6 +14,7 @@ from pypdf import PdfReader
 
 from app.core.config import Settings
 from app.core.errors import NeedsReview
+from app.nlp.cleaning import fold_pdf_noise
 from app.parsers.base import ensure_page_count
 from app.schemas.contracts import ParsedDocument, QualityReport, TextBlock
 
@@ -33,6 +34,9 @@ def parse_pdf(payload: bytes, title: str, settings: Settings) -> ParsedDocument:
         raise
     except Exception as exc:  # noqa: BLE001 损坏的 PDF 统一转为可解释的 needs_review
         raise NeedsReview(f"PDF 读取失败：{exc.__class__.__name__}") from exc
+
+    # 抽取噪声归一化（点线引导符/连续空白）：打分与切块使用同一份折叠后文本
+    page_texts = [fold_pdf_noise(t) for t in page_texts]
 
     quality = _score_pages(page_texts, settings)
     blocks = [

@@ -15,13 +15,14 @@ class HistoryMessage(BaseModel):
 
 
 class RetrievalDebugRequest(BaseModel):
-    kb_id: int
+    # 缺省时检索主空间（与 POST /qa 一致）
+    kb_id: int | None = None
     question: str = Field(
         min_length=1, max_length=get_settings().retrieval_question_max_chars
     )
     top_k: int = Field(default=6, ge=1, le=10)
     history: list[HistoryMessage] = Field(
-        default_factory=list, max_length=get_settings().history_max_rounds
+        default_factory=list, max_length=get_settings().history_max_rounds * 2
     )
 
 

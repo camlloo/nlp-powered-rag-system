@@ -66,3 +66,9 @@ def test_first_sentence():
     sample = "第三章 费用报销。员工应在出差结束后 30 日内申请。"
     assert first_sentence(sample) == "第三章 费用报销。"
     assert first_sentence("无句尾标点的文本") == "无句尾标点的文本"
+
+
+def test_first_sentence_merges_list_marker_fragment():
+    # 句末标点保护会把列表编号"1."切成独立碎片；摘录时必须并回下一句
+    content = "1. 出差结束后 30 日内提交申请。2. 附上有效票据与审批单。"
+    assert first_sentence(content) == "1. 出差结束后 30 日内提交申请。"

@@ -85,3 +85,26 @@ class MockChatGateway:
             "stop",
             TokenUsage(prompt_tokens=prompt_tokens, total_tokens=prompt_tokens + completion_tokens),
         )
+
+    async def generate_stream(
+        self,
+        *,
+        system_prompt: str,
+        user_payload: str,
+        max_tokens: int | None = None,
+        budget_scope_id: str = "global",
+    ):
+        """按 4 字符分片产出固定回复，模拟真实流式节奏。"""
+        self.calls.append(
+            {
+                "system_prompt": system_prompt,
+                "user_payload": user_payload,
+                "max_tokens": max_tokens,
+            }
+        )
+        if self.failures:
+            raise self.failures.pop(0)
+        reply = self.reply
+        for i in range(0, len(reply), 4):
+            yield {"delta": reply[i : i + 4], "finish_reason": None}
+        yield {"delta": "", "finish_reason": "stop"}

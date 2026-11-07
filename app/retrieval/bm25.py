@@ -59,8 +59,13 @@ class BM25Index:
             b=b,
         )
 
-    def search(self, query_terms: list[str], k: int = 50) -> list[tuple[int, float]]:
-        """返回 (chunk_id, bm25_score)，按 (-分值, chunk_id) 确定性排序。"""
+    def search(
+        self,
+        query_terms: list[str],
+        k: int = 50,
+        allowed_ids: set[int] | None = None,
+    ) -> list[tuple[int, float]]:
+        """返回 (chunk_id, bm25_score)；allowed_ids 为可见性过滤后的全库白名单。"""
         if k <= 0 or not self.chunk_ids or not query_terms:
             return []
         scores: defaultdict[int, float] = defaultdict(float)
@@ -69,6 +74,9 @@ class BM25Index:
             if idf is None:
                 continue
             for pos, tf in self.postings[term]:
+                chunk_id = self.chunk_ids[pos]
+                if allowed_ids is not None and chunk_id not in allowed_ids:
+                    continue
                 dl_ratio = self.doc_len[pos] / self.avgdl if self.avgdl > 0 else 0.0
                 denom = tf + self.k1 * (1 - self.b + self.b * dl_ratio)
                 scores[pos] += idf * tf * (self.k1 + 1) / denom

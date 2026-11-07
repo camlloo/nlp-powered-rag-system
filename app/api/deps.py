@@ -10,9 +10,9 @@ from fastapi import Depends, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.auth import Principal, get_principal
+from app.core.auth import Principal, authenticate, role_at_least
 from app.core.config import Settings, get_settings
-from app.core.errors import NotFound
+from app.core.errors import Forbidden, NotFound
 from app.db.models import KbCollection
 from app.db.session import get_session
 
@@ -20,25 +20,47 @@ SessionDep = Annotated[Session, Depends(get_session)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 
-def _current_principal(request: Request, settings: SettingsDep) -> Principal:
-    return get_principal(request, settings)
+def _current_principal(request: Request) -> Principal:
+    return authenticate(request)
 
 
 PrincipalDep = Annotated[Principal, Depends(_current_principal)]
 
 
-def require_kb_access(kb_id: int, session: SessionDep, principal: PrincipalDep) -> KbCollection:
-    """统一授权校验点：首期仅校验知识库存在且属于当前租户。
+def require_admin(principal: PrincipalDep) -> Principal:
+    """全局管理员校验点：管理面接口专用；静态令牌旁路天然 is_admin=True。"""
+    if not principal.is_admin:
+        raise Forbidden("需要管理员权限")
+    return principal
 
-    404 按策略隐藏存在性（实现文档 §9.4）；后期 RBAC 在此补充角色判断与
-    acl_revision 失效检查。
+
+AdminDep = Annotated[Principal, Depends(require_admin)]
+
+
+def require_kb_access(
+    kb_id: int, session: SessionDep, principal: PrincipalDep, min_role: str = "viewer"
+) -> KbCollection:
+    """统一授权校验点（RBAC）：存在性 + 成员资格 + 角色门槛。
+
+    404 按策略隐藏存在性，403 表示是成员但角色不足（实现文档 §9.4）；
+    管理员旁路。后期 JWT 换签发方，此校验点不变。
     """
+    from app.db.models import KbMember
+
     kb = session.scalar(
         select(KbCollection).where(
             KbCollection.id == kb_id,
             KbCollection.tenant_id == principal.tenant_id,
+            KbCollection.deleted_at.is_(None),
         )
     )
     if kb is None:
         raise NotFound("知识库不存在")
+    if principal.can_see_all():
+        return kb
+    member = session.get(KbMember, (kb_id, principal.user_id))
+    if member is None:
+        raise Forbidden("你不是该知识库的成员")
+    if not role_at_least(member.role, min_role):
+        raise Forbidden("当前角色权限不足")
     return kb

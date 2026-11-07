@@ -16,12 +16,19 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import sessionmaker
 
 from app.core.config import Settings, get_settings
-from app.core.errors import Conflict
-from app.db.models import KbCollection, KbDocument, KbDocumentVersion, QaCitation, QaRequest
+from app.core.errors import AppError, Conflict, NotFound
+from app.db.models import (
+    Conversation,
+    KbCollection,
+    KbDocument,
+    KbDocumentVersion,
+    QaCitation,
+    QaRequest,
+)
 from app.db.session import SessionLocal
 from app.gateways.chat import ChatGateway, TokenUsage
 from app.gateways.mock import MockChatGateway
@@ -77,20 +84,22 @@ class QaService:
         self,
         *,
         kb_id: int,
-        tenant_id: int,
-        user_id: int,
+        principal,
         question: str,
         history: list[dict] | None = None,
         top_k: int = 6,
+        conversation_id: int | None = None,
     ) -> QaOutcome:
         started = time.monotonic()
         request_id = f"qa_{uuid.uuid4().hex}"
         settings = self._settings
+        tenant_id = principal.tenant_id
+        user_id = principal.user_id
 
         with self._sessions() as session:
             kb = session.get(KbCollection, kb_id)
-            if kb is None:
-                raise Conflict("知识库不存在")
+            if kb is None or kb.deleted_at is not None:
+                raise NotFound("知识库不存在")
             ask_time_state = (kb.active_index_id, kb.data_revision, kb.acl_revision)
 
         result = await self._retrieval.retrieve(
@@ -99,6 +108,7 @@ class QaService:
             question=question,
             history=history,
             top_k=top_k,
+            principal=principal,
         )
         usage = TokenUsage()
 
@@ -117,6 +127,7 @@ class QaService:
                 question=question,
                 top_k=top_k,
                 expected_state=ask_time_state,
+                conversation_id=conversation_id,
             )
         if result.status == "insufficient_evidence":
             # 证据缺失：直接拒答，不调用生成模型（§7.5）
@@ -134,11 +145,12 @@ class QaService:
                 question=question,
                 top_k=top_k,
                 expected_state=ask_time_state,
+                conversation_id=conversation_id,
             )
 
         slots = build_slots(result.evidence)
         context = build_context(slots, question, history, settings)
-        citations = self._build_citations(context.slots)
+        citations = self.build_citations(context.slots)
 
         answer: str | None = None
         validation_error: str | None = None
@@ -174,6 +186,7 @@ class QaService:
                 question=question,
                 top_k=top_k,
                 expected_state=ask_time_state,
+                conversation_id=conversation_id,
                 error_code=validation_error,
             )
 
@@ -191,7 +204,214 @@ class QaService:
             question=question,
             top_k=top_k,
             expected_state=ask_time_state,
+            conversation_id=conversation_id,
         )
+
+    async def stream_ask(
+        self,
+        *,
+        kb_id: int,
+        principal,
+        question: str,
+        history: list[dict] | None = None,
+        top_k: int = 6,
+        conversation_id: int | None = None,
+    ):
+        """流式问答：逐个产出 SSE 事件 {"event": str, "data": dict}。
+
+        序列：meta → citations → delta* → done（或 error / notice）。
+        检索、证据门槛与修订号复核在流开始前完成；生成阶段逐片转发。
+        流式路径不做静默重生成——校验失败以 notice + status 标注
+        （§8.3 的"重生成一次"属于完整校验后返回模式，见非流式 ask）。
+        """
+        started = time.monotonic()
+        request_id = f"qa_{uuid.uuid4().hex}"
+        tenant_id = principal.tenant_id
+        user_id = principal.user_id
+        settings = self._settings
+
+        with self._sessions() as session:
+            kb = session.get(KbCollection, kb_id)
+            if kb is None or kb.deleted_at is not None:
+                raise NotFound("知识库不存在")
+            expected_state = (kb.active_index_id, kb.data_revision, kb.acl_revision)
+
+        yield {"event": "meta", "data": {"request_id": request_id, "kb_id": kb_id}}
+
+        result = await self._retrieval.retrieve(
+            kb_id=kb_id,
+            tenant_id=tenant_id,
+            question=question,
+            history=history,
+            top_k=top_k,
+            principal=principal,
+        )
+        usage = TokenUsage()
+
+        if result.status in ("clarification_required", "insufficient_evidence"):
+            answer = None if result.status == "clarification_required" else INSUFFICIENT_ANSWER
+            self._write_audit(
+                request_id=request_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                kb_id=kb_id,
+                index_id=result.index_id,
+                question=question,
+                status=result.status,
+                retrieval_mode=result.mode,
+                answer=answer,
+                error_code=None,
+                latency_ms=int((time.monotonic() - started) * 1000),
+                top_k=top_k,
+                usage=usage,
+                citations=[],
+                conversation_id=conversation_id,
+            )
+            yield {
+                "event": "done",
+                "data": {
+                    "status": result.status,
+                    "answer": answer,
+                    "citations": [],
+                    "mode": result.mode,
+                },
+            }
+            return
+
+        # 修订号复核（流开始前）：失败则记审计并以 error 事件收场
+        with self._sessions() as session:
+            kb = session.get(KbCollection, kb_id)
+            current = (kb.active_index_id, kb.data_revision, kb.acl_revision) if kb else None
+        if current != expected_state:
+            self._write_audit(
+                request_id=request_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                kb_id=kb_id,
+                index_id=result.index_id,
+                question=question,
+                status="stale_index",
+                retrieval_mode=result.mode,
+                answer=None,
+                error_code="index_state_changed",
+                latency_ms=int((time.monotonic() - started) * 1000),
+                top_k=top_k,
+                usage=usage,
+                citations=[],
+                conversation_id=conversation_id,
+            )
+            yield {
+                "event": "error",
+                "data": {"code": "index_state_changed", "message": "知识库状态已变化，请重新提问"},
+            }
+            return
+
+        slots = build_slots(result.evidence)
+        context = build_context(slots, question, history, settings)
+        citations = self.build_citations(context.slots)
+        yield {
+            "event": "citations",
+            "data": {
+                "citations": [
+                    {
+                        "source_id": c.source_id,
+                        "citation_id": c.citation_id,
+                        "chunk_id": c.chunk_id,
+                        "doc_version_id": c.doc_version_id,
+                        "document_title": c.document_title,
+                        "document_version": c.document_version,
+                        "locator": c.locator,
+                        "quote": c.quote,
+                    }
+                    for c in citations
+                ]
+            },
+        }
+
+        accumulated: list[str] = []
+        try:
+            async for piece in self._chat.generate_stream(
+                system_prompt=SYSTEM_PROMPT,
+                user_payload=context.user_payload,
+                budget_scope_id="qa",
+            ):
+                if piece["delta"]:
+                    accumulated.append(piece["delta"])
+                    yield {"event": "delta", "data": {"text": piece["delta"]}}
+        except AppError as exc:
+            self._write_audit(
+                request_id=request_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                kb_id=kb_id,
+                index_id=result.index_id,
+                question=question,
+                status="generation_failed",
+                retrieval_mode=result.mode,
+                answer="".join(accumulated) or None,
+                error_code=exc.code,
+                latency_ms=int((time.monotonic() - started) * 1000),
+                top_k=top_k,
+                usage=usage,
+                citations=citations,
+                conversation_id=conversation_id,
+            )
+            yield {"event": "error", "data": {"code": exc.code, "message": exc.message}}
+            return
+
+        answer = "".join(accumulated).strip()
+        validation = validate_answer(answer, context.valid_source_ids)
+        status = "answered" if validation.ok else "answer_validation_failed"
+        if not validation.ok:
+            logger.warning(
+                "qa=%s 流式答案校验未通过（%s）", request_id, validation.error_code
+            )
+            yield {
+                "event": "notice",
+                "data": {
+                    "code": validation.error_code,
+                    "message": "答案未通过引用校验，以下为可查证的来源。",
+                },
+            }
+
+        self._write_audit(
+            request_id=request_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            kb_id=kb_id,
+            index_id=result.index_id,
+            question=question,
+            status=status,
+            retrieval_mode=result.mode,
+            answer=answer or None,
+            error_code=validation.error_code,
+            latency_ms=int((time.monotonic() - started) * 1000),
+            top_k=top_k,
+            usage=TokenUsage(prompt_tokens=0, total_tokens=len(answer)),
+            citations=citations,
+            conversation_id=conversation_id,
+        )
+        yield {
+            "event": "done",
+            "data": {
+                "status": status,
+                "answer": answer or None,
+                "citations": [
+                    {
+                        "source_id": c.source_id,
+                        "citation_id": c.citation_id,
+                        "document_title": c.document_title,
+                        "document_version": c.document_version,
+                        "locator": c.locator,
+                        "quote": c.quote,
+                    }
+                    for c in citations
+                ],
+                "mode": result.mode,
+                "request_id": request_id,
+                "latency_ms": int((time.monotonic() - started) * 1000),
+            },
+        }
 
     # ------------------------------------------------------------------ 内部
 
@@ -212,6 +432,7 @@ class QaService:
         top_k: int,
         expected_state: tuple,
         error_code: str | None = None,
+        conversation_id: int | None = None,
     ) -> QaOutcome:
         """输出前复核修订号（§3.3），随后写审计三表。"""
         with self._sessions() as session:
@@ -236,6 +457,7 @@ class QaService:
                 top_k=top_k,
                 usage=usage,
                 citations=[],
+                conversation_id=conversation_id,
             )
             raise Conflict("知识库状态已变化，请重新提问")
 
@@ -254,6 +476,7 @@ class QaService:
             top_k=top_k,
             usage=usage,
             citations=citations,
+            conversation_id=conversation_id,
         )
         return QaOutcome(
             request_id=request_id,
@@ -266,7 +489,7 @@ class QaService:
             usage=usage,
         )
 
-    def _build_citations(self, slots) -> list[CitationInfo]:
+    def build_citations(self, slots) -> list[CitationInfo]:
         if not slots:
             return []
         doc_version_ids = {slot.doc_version_id for slot in slots}
@@ -313,6 +536,7 @@ class QaService:
         top_k: int,
         usage: TokenUsage,
         citations: list[CitationInfo],
+        conversation_id: int | None = None,
     ) -> None:
         with self._sessions() as session:
             qa_request = QaRequest(
@@ -321,6 +545,7 @@ class QaService:
                 user_id=user_id,
                 kb_id=kb_id,
                 index_id=index_id,
+                conversation_id=conversation_id,
                 question=question,
                 answer_status=status,
                 retrieval_mode=retrieval_mode,
@@ -352,5 +577,12 @@ class QaService:
                         locator=citation.locator,
                         quote=citation.quote,
                     )
+                )
+            if conversation_id is not None:
+                # 会话最近使用时间 = 最后一轮问答（同一事务，任务列表按此排序）
+                session.execute(
+                    update(Conversation)
+                    .where(Conversation.id == conversation_id)
+                    .values(updated_at=func.now())
                 )
             session.commit()

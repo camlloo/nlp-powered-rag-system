@@ -84,6 +84,7 @@ class RetrievalService:
         question: str,
         history: list[dict] | None = None,
         top_k: int = 6,
+        principal=None,
     ) -> RetrievalResult:
         settings = self._settings
         plan = preprocess(question, history)
@@ -102,7 +103,7 @@ class RetrievalService:
 
         with session_factory() as session:
             kb = session.get(KbCollection, kb_id)
-            if kb is None:
+            if kb is None or kb.deleted_at is not None:
                 raise NotFound("知识库不存在")
             if kb.active_index_id is None:
                 gate = evaluate_gate(
@@ -136,6 +137,30 @@ class RetrievalService:
                 status="insufficient_evidence", mode="hybrid", gate=gate.metrics, **base
             )
 
+        # 检索级可见性过滤：自己的 ∨ 公开 ∨ 组织标签匹配（管理员旁路）
+        allowed_ids: set[int] | None = None
+        if principal is not None and not principal.can_see_all():
+            allowed_ids = {
+                cid
+                for cid, record in loaded.records.items()
+                if record.uploader_user_id == principal.user_id
+                or record.visibility == "public"
+                or (record.org_tag_id is not None and record.org_tag_id in principal.org_tag_ids)
+            }
+            if not allowed_ids:
+                gate = evaluate_gate(
+                    has_candidates=False,
+                    top_cosine=None,
+                    keyword_coverage=0.0,
+                    cosine_floor=settings.evidence_gate_cosine_floor,
+                )
+                return RetrievalResult(
+                    status="insufficient_evidence",
+                    mode="hybrid",
+                    gate=gate.metrics,
+                    **base,
+                )
+
         # 词项通道：BM25（派生结构挂载在快照缓存上，随快照换入换出）
         index_bm25 = loaded.derived.get("bm25")
         if index_bm25 is None:
@@ -146,7 +171,9 @@ class RetrievalService:
                 b=settings.bm25_b,
             )
             loaded.derived["bm25"] = index_bm25
-        lexical = index_bm25.search(plan.terms, settings.channel_top_k)
+        lexical = index_bm25.search(
+            plan.terms, settings.channel_top_k, allowed_ids=allowed_ids
+        )
 
         # 向量通道：独立全库精确召回；查询向量超时降级（§6.2 lexical_only）
         mode = "hybrid"
@@ -154,7 +181,11 @@ class RetrievalService:
         try:
             query_vector = await self._embedding.embed_query(plan.normalized, tenant_id=tenant_id)
             vector_hits = dense_topk(
-                loaded.matrix, loaded.chunk_ids, query_vector, settings.channel_top_k
+                loaded.matrix,
+                loaded.chunk_ids,
+                query_vector,
+                settings.channel_top_k,
+                allowed_ids=allowed_ids,
             )
         except EmbeddingUnavailable:
             mode = "lexical_only"

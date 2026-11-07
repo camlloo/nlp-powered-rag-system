@@ -36,6 +36,9 @@ class ChunkRecord:
     tokens: list[str]
     keywords: list[str]
     source_locator: dict
+    uploader_user_id: int = 0
+    visibility: str = "public"
+    org_tag_id: int | None = None
 
 
 @dataclass
@@ -169,6 +172,9 @@ class IndexCacheManager:
                 tokens=list(chunk.tokens),
                 keywords=list(chunk.keywords),
                 source_locator=dict(chunk.source_locator),
+                uploader_user_id=chunk.uploader_user_id,
+                visibility=chunk.visibility,
+                org_tag_id=chunk.org_tag_id,
             )
             embeddings.append(np.asarray(embedding, dtype=np.float32))
         if embeddings:

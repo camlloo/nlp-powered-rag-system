@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+from app.core.auth import get_admin_principal
 from app.core.config import get_settings
 from app.core.errors import Conflict
 from app.db.models import QaCitation, QaFeedback, QaRequest
@@ -30,7 +31,7 @@ def test_qa_answered_with_citations_and_audit(indexed_kb):
     service = make_qa_service(settings)
     outcome = asyncio_run(
         service.ask(
-            kb_id=kb_id, tenant_id=1, user_id=1, question="报销应该在多少天内申请？"
+            kb_id=kb_id, principal=get_admin_principal(), question="报销应该在多少天内申请？"
         )
     )
     assert outcome.status == "answered"
@@ -63,7 +64,11 @@ def test_qa_insufficient_skips_model(indexed_kb):
     try:
         chat = MockChatGateway()
         service = make_qa_service(settings, chat)
-        outcome = asyncio_run(service.ask(kb_id=empty_kb, tenant_id=1, user_id=1, question="报销"))
+        outcome = asyncio_run(
+            service.ask(
+                kb_id=empty_kb, principal=get_admin_principal(), question="报销"
+            )
+        )
         assert outcome.status == "insufficient_evidence"
         assert outcome.answer == INSUFFICIENT_ANSWER
         assert chat.calls == []  # 拒答路径绝不调用生成模型（§7.5）
@@ -81,7 +86,7 @@ def test_qa_validation_failed_shows_legal_sources(indexed_kb):
     chat = MockChatGateway(reply="我不知道，资料里没有写。")  # 无任何引用编号
     service = make_qa_service(settings, chat)
     outcome = asyncio_run(
-        service.ask(kb_id=kb_id, tenant_id=1, user_id=1, question="报销时限")
+        service.ask(kb_id=kb_id, principal=get_admin_principal(), question="报销时限")
     )
     assert outcome.status == "answer_validation_failed"
     assert outcome.answer is None  # 未校验答案不输出
@@ -121,11 +126,89 @@ def test_qa_stale_index_conflict(indexed_kb):
     assert qa_request.answer_status == "stale_index"  # 变更轨迹也入审计
 
 
+
+def test_mock_stream_yields_chunks():
+    gateway = MockChatGateway(reply="答案正文 [S1]")
+
+    async def collect():
+        pieces = []
+        async for piece in gateway.generate_stream(system_prompt="s", user_payload="u"):
+            pieces.append(piece)
+        return pieces
+
+    pieces = asyncio_run(collect())
+    assert "".join(p["delta"] for p in pieces) == "答案正文 [S1]"
+    assert pieces[-1]["finish_reason"] == "stop"
+
+
+def test_qa_stream_endpoint_sse_sequence(indexed_kb):
+    kb_id, _ = indexed_kb
+    headers = {"X-API-Token": get_settings().api_token}
+    prefix = get_settings().api_prefix
+    with TestClient(app) as client:
+        resp = client.post(
+            f"{prefix}/qa/stream",
+            json={"kb_id": kb_id, "question": "报销应该在多少天内申请？"},
+            headers=headers,
+        )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/event-stream")
+        body = resp.text
+
+    # 事件顺序：meta → citations → delta* → done
+    events = [line[7:] for line in body.splitlines() if line.startswith("event: ")]
+    assert events[0] == "meta"
+    assert "citations" in events
+    assert "delta" in events
+    assert events[-1] == "done"
+    assert '"status": "answered"' in body
+    assert body.count("event: delta") >= 3  # Mock 按 4 字符分片，必有多个 delta
+    # 审计落库
+    with SessionLocal() as session:
+        row = session.execute(
+            select(QaRequest).where(
+                QaRequest.request_id.like("qa_%")
+            ).order_by(QaRequest.id.desc()).limit(1)
+        ).scalar_one()
+    assert row.answer_status == "answered"
+    assert "30 日内" in row.answer
+
+
+def test_qa_stream_empty_kb_insufficient(indexed_kb):
+    kb_id, _ = indexed_kb
+    empty_kb = create_kb()
+    try:
+        headers = {"X-API-Token": get_settings().api_token}
+        prefix = get_settings().api_prefix
+        with TestClient(app) as client:
+            resp = client.post(
+                f"{prefix}/qa/stream",
+                json={"kb_id": empty_kb, "question": "报销"},
+                headers=headers,
+            )
+        body = resp.text
+        assert "event: done" in body
+        assert "insufficient_evidence" in body
+        assert "event: delta" not in body  # 拒答路径不调生成模型
+    finally:
+        cleanup_kb(empty_kb)
+
+
+def test_qa_stream_unauthorized(indexed_kb):
+    kb_id, _ = indexed_kb
+    prefix = get_settings().api_prefix
+    with TestClient(app) as client:
+        resp = client.post(
+            f"{prefix}/qa/stream",
+            json={"kb_id": kb_id, "question": "报销"},
+        )
+    assert resp.status_code == 401
+
 def test_citations_and_feedback_api(indexed_kb):
     kb_id, settings = indexed_kb
     service = make_qa_service(settings)
     outcome = asyncio_run(
-        service.ask(kb_id=kb_id, tenant_id=1, user_id=1, question="报销时限")
+        service.ask(kb_id=kb_id, principal=get_admin_principal(), question="报销时限")
     )
     citation_id = outcome.citations[0].citation_id
     headers = {"X-API-Token": get_settings().api_token}

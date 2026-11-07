@@ -108,11 +108,27 @@ def build_context(
     )
 
 
+_LIST_MARKER_ONLY = ("1.", "2.", "3.", "1、", "2、", "3、", "一、", "二、", "•", "·")
+
+
 def first_sentence(content: str, limit: int = 200) -> str:
-    """引用摘录：取正文首个完整句子（与展示文本同源，不做改写）。"""
+    """引用摘录：取正文首个有实义的句子（与展示文本同源，不做改写）。
+
+    列表块的编号前缀（如"1."）会被句末标点保护切成独立碎片，
+    摘录时并入下一个片段，避免出现"「1.」"式的空引文。
+    """
     sentences = split_sentences(content)
-    quote = sentences[0] if sentences else content
-    return quote.strip()[:limit]
+    quote_parts: list[str] = []
+    for sentence in sentences:
+        if not quote_parts and sentence.strip() in _LIST_MARKER_ONLY:
+            quote_parts.append(sentence)
+            continue
+        quote_parts.append(sentence)
+        break
+    if not quote_parts:
+        quote_parts = [content]
+    quote = "".join(quote_parts).strip() or content.strip()
+    return quote[:limit]
 
 
 def _evidence_json(slots: list[EvidenceSlot]) -> str:

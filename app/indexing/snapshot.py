@@ -118,6 +118,9 @@ class _FileUnit:
     title: str
     storage_uri: str
     filename: str
+    uploader_user_id: int = 1
+    visibility: str = "public"
+    org_tag_id: int | None = None
     parsed: ParsedDocument | None = None
 
 
@@ -126,6 +129,9 @@ class _DraftRow:
     doc_version_id: int
     document_id: int
     draft: object  # ChunkDraft
+    uploader_user_id: int = 1
+    visibility: str = "public"
+    org_tag_id: int | None = None
 
 
 @dataclass
@@ -175,7 +181,7 @@ class IndexBuilder:
             kb = session.get(KbCollection, kb_id)
             source_revision = kb.data_revision
             manifest_rows = session.execute(
-                select(KbDocumentVersion)
+                select(KbDocumentVersion, KbDocument)
                 .join(KbDocument, KbDocument.id == KbDocumentVersion.document_id)
                 .where(
                     KbDocumentVersion.kb_id == kb_id,
@@ -183,16 +189,19 @@ class IndexBuilder:
                     KbDocumentVersion.parse_status == PARSE_SUCCEEDED,
                 )
                 .order_by(KbDocumentVersion.id)
-            ).scalars().all()
+            ).all()
         units = [
             _FileUnit(
-                doc_version_id=row.id,
-                document_id=row.document_id,
-                title=row.title,
-                storage_uri=row.storage_uri,
-                filename=f"{row.title}{Path(row.storage_uri).suffix}",
+                doc_version_id=version.id,
+                document_id=version.document_id,
+                title=version.title,
+                storage_uri=version.storage_uri,
+                filename=f"{version.title}{Path(version.storage_uri).suffix}",
+                uploader_user_id=document.uploader_user_id,
+                visibility=document.visibility,
+                org_tag_id=document.org_tag_id,
             )
-            for row in manifest_rows
+            for version, document in manifest_rows
         ]
 
         index_id = self._create_index_row(kb_id, source_revision, units, tenant_id)
@@ -208,7 +217,16 @@ class IndexBuilder:
             )
             result = run_pipeline(parsed, self._settings)
             for draft in result.chunks:
-                draft_rows.append(_DraftRow(unit.doc_version_id, unit.document_id, draft))
+                draft_rows.append(
+                    _DraftRow(
+                        unit.doc_version_id,
+                        unit.document_id,
+                        draft,
+                        uploader_user_id=unit.uploader_user_id,
+                        visibility=unit.visibility,
+                        org_tag_id=unit.org_tag_id,
+                    )
+                )
             per_file_counts[unit.doc_version_id] = len(result.chunks)
             if lease:
                 lease.renew()
@@ -367,6 +385,9 @@ class IndexBuilder:
                         tokens=list(draft.tokens),
                         keywords=list(draft.keywords),
                         source_locator=dict(draft.source_locator),
+                        uploader_user_id=row.uploader_user_id,
+                        visibility=row.visibility,
+                        org_tag_id=row.org_tag_id,
                     )
                 )
                 if len(batch) >= EMBED_BATCH_ROWS:

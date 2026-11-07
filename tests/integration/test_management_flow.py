@@ -12,6 +12,7 @@ from app.core.config import Settings, get_settings
 from app.core.errors import Conflict
 from app.db.models import (
     IngestJob,
+    KbChunk,
     KbCollection,
     KbDocument,
     KbDocumentVersion,
@@ -81,6 +82,19 @@ def test_document_list_with_status(indexed_kb):
         assert client.get(
             f"{prefix}/kbs/{kb_id}/documents", headers={"X-API-Token": "wrong"}
         ).status_code == 401
+
+
+def test_list_kbs(indexed_kb):
+    kb_id, *_ = indexed_kb
+    headers = {"X-API-Token": get_settings().api_token}
+    prefix = get_settings().api_prefix
+    with TestClient(app) as client:
+        resp = client.get(f"{prefix}/kbs", headers=headers)
+        assert resp.status_code == 200
+        items = resp.json()["items"]
+        mine = next(item for item in items if item["kb_id"] == kb_id)
+        assert mine["has_index"] is True and mine["name"]
+        assert client.get(f"{prefix}/kbs", headers={"X-API-Token": "wrong"}).status_code == 401
 
 
 def test_delete_document_invalidates_retrieval_immediately(indexed_kb):
@@ -225,6 +239,47 @@ def test_cleanup_purges_expired(indexed_kb):
     assert not (Path(settings.storage_dir) / purged_uri).exists()  # 原始文件已删除
 
 
+
+def test_delete_kb_full_lifecycle(indexed_kb):
+    kb_id, settings, builder = indexed_kb
+    headers = {"X-API-Token": get_settings().api_token}
+    prefix = get_settings().api_prefix
+    with TestClient(app) as client:
+        resp = client.delete(f"{prefix}/kbs/{kb_id}", headers=headers)
+        assert resp.status_code == 200, resp.text
+        # 列表不再出现
+        kb_list = client.get(f"{prefix}/kbs", headers=headers).json()["items"]
+        assert all(item["kb_id"] != kb_id for item in kb_list)
+        # 知识库级接口全部 404
+        assert client.get(f"{prefix}/kbs/{kb_id}/documents", headers=headers).status_code == 404
+        stream_resp = client.post(
+            f"{prefix}/qa/stream",
+            json={"kb_id": kb_id, "question": "报销"},
+            headers=headers,
+        )
+        assert stream_resp.status_code == 404
+        # 二次删除 404（已删知识库按策略隐藏）
+        assert client.delete(f"{prefix}/kbs/{kb_id}", headers=headers).status_code == 404
+
+    # 整库物理清除（回拨保留期）
+    with SessionLocal() as session:
+        kb = session.get(KbCollection, kb_id)
+        kb.deleted_at = dt.datetime.now(dt.UTC) - dt.timedelta(hours=48)
+        session.commit()
+    counts = cleanup_kb_scope(
+        SessionLocal,
+        Settings(storage_dir=settings.storage_dir, cleanup_retention_hours=24),
+        kb_id=kb_id,
+    )
+    assert counts["kb_purged"] == 1
+    with SessionLocal() as session:
+        assert session.get(KbCollection, kb_id) is None
+        assert session.execute(
+            select(func.count()).select_from(KbChunk).where(KbChunk.kb_id == kb_id)
+        ).scalar_one() == 0
+    # 文件已物理删除
+    assert not list((Path(settings.storage_dir) / "uploads").glob("*"))
+
 def test_cleanup_job_via_worker(indexed_kb):
     kb_id, settings, builder = indexed_kb
     with SessionLocal() as session:
@@ -255,19 +310,19 @@ def test_cleanup_job_via_worker(indexed_kb):
 async def delete_via_api_logic(document_id: int) -> None:
     """与 DELETE /documents/{id} 相同的事务语义（绕过 HTTP 层复用断言）。"""
     from app.api.kbs import delete_document
-    from app.core.auth import Principal
+    from app.core.auth import get_admin_principal
 
     with SessionLocal() as session:
-        principal = Principal(tenant_id=1, user_id=1)
+        principal = get_admin_principal()
         delete_document(document_id, session, principal)
 
 
 def delete_document_direct(document_id: int) -> None:
     from app.api.kbs import delete_document
-    from app.core.auth import Principal
+    from app.core.auth import get_admin_principal
 
     with SessionLocal() as session:
-        principal = Principal(tenant_id=1, user_id=1)
+        principal = get_admin_principal()
         delete_document(document_id, session, principal)
 
 

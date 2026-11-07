@@ -14,10 +14,11 @@ from __future__ import annotations
 import datetime as dt
 import logging
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 
 from app.core.config import Settings
 from app.db.models import (
+    IngestJob,
     KbChunk,
     KbCollection,
     KbDocument,
@@ -41,6 +42,37 @@ def cleanup_kb_scope(
     with session_factory() as session:
         kb = session.get(KbCollection, kb_id)
         if kb is None:
+            return counts
+
+        # 0) 整库软删除且过保留期：文件、向量、块、快照、版本、文档、成员、集合全部物理清除
+        if kb.deleted_at is not None and kb.deleted_at < cutoff:
+            versions = session.execute(
+                select(KbDocumentVersion).where(KbDocumentVersion.kb_id == kb_id)
+            ).scalars().all()
+            for version in versions:
+                try:
+                    delete_upload(version.storage_uri, settings)
+                except (ValueError, OSError) as exc:
+                    logger.warning("清理文件失败 uri=%s: %s", version.storage_uri, exc)
+            session.execute(
+                delete(KbEmbedding).where(
+                    KbEmbedding.chunk_id.in_(select(KbChunk.id).where(KbChunk.kb_id == kb_id))
+                )
+            )
+            session.execute(delete(KbChunk).where(KbChunk.kb_id == kb_id))
+            session.execute(delete(KbIndex).where(KbIndex.kb_id == kb_id))
+            session.execute(
+                delete(KbDocumentVersion).where(KbDocumentVersion.kb_id == kb_id)
+            )
+            session.execute(delete(KbDocument).where(KbDocument.kb_id == kb_id))
+            session.execute(delete(IngestJob).where(IngestJob.kb_id == kb_id))
+            session.execute(
+                text("DELETE FROM kb_member WHERE kb_id = :k"), {"k": kb_id}
+            )
+            session.execute(delete(KbCollection).where(KbCollection.id == kb_id))
+            session.commit()
+            counts["kb_purged"] = 1
+            logger.info("cleanup: 知识库 %s 已整库物理清除", kb_id)
             return counts
 
         # 1) 非活跃且过期的快照（superseded / building 遗留 / 旧 ready）

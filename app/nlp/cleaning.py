@@ -16,8 +16,23 @@ from app.schemas.contracts import ParsedDocument
 _SPACE_RE = re.compile(r"[ \t\f\v]+")
 _BLANK_RE = re.compile(r"\n{3,}")
 
+# 点线引导符：一个或多个「空白+句点」组合（目录页 " .  .  . " 等）。
+# 句点前无空白则不匹配，因此省略号 "..." 与编号 "1." "1.2.3" 不受影响。
+_DOT_LEADER_RE = re.compile(r"(?:[ \t]+\.)+[ \t]*")
+
 # 页眉页脚判定：短行（≤40 字符）、去空白后比较
 _HEADER_LINE_MAX = 40
+
+
+def fold_pdf_noise(text: str) -> str:
+    """PDF 抽取噪声归一化：折叠点线引导符与连续空白（质量打分与切块前调用）。
+
+    目录页的 " .  .  . " 点线由空格与句点交替构成：空格计入字符总数但不计入
+    可读字符，会把可读比例拉低造成 needs_review 误判；残留点号也会进入切块
+    污染词项与向量。此处统一折叠为单个空格，换行结构保留。
+    """
+    t = _DOT_LEADER_RE.sub(" ", text)
+    return _SPACE_RE.sub(" ", t)
 
 
 def normalize_search_text(text: str) -> str:

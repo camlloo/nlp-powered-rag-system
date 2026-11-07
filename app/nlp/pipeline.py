@@ -13,7 +13,7 @@ from app.nlp import chunker, cleaning, dedup, keywords, tokenizer
 from app.schemas.contracts import ChunkDraft, ParsedDocument, PipelineResult
 
 # 规则版本：清洗/分句/分词/切块任一规则语义变更时递增
-RULES_VERSION = "1"
+RULES_VERSION = "2"
 
 
 def pipeline_version(settings: Settings) -> str:
