@@ -69,6 +69,17 @@ class Settings(BaseSettings):
     worker_poll_interval_seconds: float = 2.0
     index_cache_budget_mb: int = 256  # 单进程索引缓存起始预算（向量+文本+词项）
 
+    # 检索（实现文档 §7；阈值除 BM25/RRF 文献初值外均为占位，M8 用开发集校准）
+    bm25_k1: float = 1.5
+    bm25_b: float = 0.75
+    channel_top_k: int = 50  # 双路各自独立取 Top50（§7.3 红线：向量独立全库召回）
+    rerank_top_k: int = 30  # 融合后进入规则重排的条数
+    mmr_lambda: float = 0.75
+    evidence_max_blocks: int = 6  # 证据 4-6 块，top_k 与此取小
+    evidence_gate_cosine_floor: float = 0.20  # 占位：顶块余弦低于此且零词项覆盖才拒答
+    retrieval_question_max_chars: int = 2000  # 超限 422，不静默截断
+    history_max_rounds: int = 3
+
     chunk_max_chars: int = 700
     chunk_overlap_chars: int = 100
     chunk_hard_max_chars: int = 1000

@@ -48,6 +48,8 @@ class LoadedIndex:
     chunk_ids: list[int] = field(default_factory=list)
     matrix: np.ndarray = field(default_factory=lambda: np.empty((0, 0), dtype=np.float32))
     records: dict[int, ChunkRecord] = field(default_factory=dict)
+    # 派生运行时结构（如 BM25 索引）由检索侧按需构建并挂载，随快照换入换出
+    derived: dict[str, object] = field(default_factory=dict)
 
     def estimate_bytes(self) -> int:
         text_bytes = sum(
