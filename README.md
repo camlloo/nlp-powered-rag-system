@@ -1,96 +1,167 @@
 # 传统 NLP 检索增强生成文本问答系统
 
-项目标识与 Gitee 仓库名统一为 `nlp-powered-rag-system`。
+面向团队/个人的私有文档问答系统：用传统 NLP（jieba 分词、TF-IDF/BM25）与向量语义双路召回，配合大模型在**可核验的文档证据**上生成带引用的回答，并做检索级权限隔离与全链路审计。
 
-使用传统 NLP 处理文档，以 PostgreSQL 16/17 + pgvector 存储业务数据和向量，以 MinIO 存储上传原文件；向量模型为 `text-embedding-v4`，问答模型为 `qwen3.8-flash`。
+- 项目标识与 Gitee 仓库名统一为 `nlp-powered-rag-system`。
+- 业务数据与向量存于 PostgreSQL + pgvector，上传原文件存于 MinIO。
+- 向量模型 `text-embedding-v4`（1024 维），问答模型 `qwen3.8-flash`（百炼 OpenAI 兼容接口）。
 
-**数据组织（去知识库化）**：文档不设知识库，直接归属「个人」或「某组织」并设公开/私有——组织公开=所有人可检索；组织私有=上传者与该组织成员；个人公开=所有人；个人私有=仅上传者。问答面向当前用户可见的全部文档（内部由单一主空间承载，见 docs/部署与运维.md §5）。
+## 功能特性
 
-**当前进度**：开发计划 M0–M8 全部完成——配置/认证/日志/错误、PostgreSQL+pgvector 数据层、四格式解析与传统 NLP 流水线、模型网关（重试/预算/缓存）、快照构建与原子发布、worker 租约、BM25+向量双路检索与 RRF 融合、问答引用与审计、管理接口（列表/删除/清理）、评测 harness 与消融实验、备份恢复演练、传统后台管理界面（Vue3 + vue-router：任务（历史对话）/ 文档管理 / 组织标签 / 用户管理 / 系统设置；组织标签与用户管理接口 `/admin/*`）。249 项测试（单元 + 集成，无数据库自动跳过）。
+- **问答与引用**：双路召回（BM25 + 向量独立全库召回）→ RRF 融合 → 规则重排 → 保守证据选择；答案携带 `[S1]` 式引注章，点击定位引用原文；证据不足时拒答。
+- **检索级权限**：文档归属「个人 / 某组织」× 可见性「公开 / 私有」，问答只在该用户可见范围内检索（无需知识库概念）。
+- **任务模块**：历史对话持久化，新建任务 / 继续追问 / 删除，侧边栏任务列表；对话从问答审计原样还原。
+- **管理后台**：文档管理（上传、归属与可见性修改、删除、全量重建）、组织标签管理、用户管理（授予/撤销管理员、打标）、系统设置；前端为手绘涂鸦风传统后台。
+- **可靠工程**：快照原子发布 + 修订号复核、worker 租约与过期恢复、软删除 + 物理清理、幂等上传、请求级 `request_id` 关联的 JSON 日志与统一错误响应、备份恢复演练与评测 harness。
 
-- **使用与部署**：见 [docs/部署与运维.md](docs/部署与运维.md)（上线步骤、环境变量速查、管理员操作、备份恢复演练、附录 C 检查表核对）。
-- **评测**：`tests/evaluation/` 提供评测集格式、指标 harness（Recall@5 / Hit@5 / MRR@10 / 拒答率）与消融实验；种子评测集 26 题用于回归，正式验收须以真实语料扩展至 ≥200 题人工标注（实现文档 §14.1）。
+## 技术栈
+
+| 层面 | 选型 |
+| --- | --- |
+| 语言 / 运行时 | Python 3.11–3.12（推荐 3.12）；Node.js（前端） |
+| 后端框架 | FastAPI + Uvicorn |
+| 数据与向量 | PostgreSQL 16/17 + pgvector；SQLAlchemy 2、psycopg 3、Alembic |
+| 原文件对象存储 | MinIO（S3 兼容） |
+| 传统 NLP | jieba 分词、规则清洗/分句/关键词、TF-IDF / BM25 |
+| 模型接入 | 百炼 OpenAI 兼容接口（embedding `text-embedding-v4`、chat `qwen3.8-flash`） |
+| 前端 | Vue 3 + Vite + vue-router（同源由后端托管构建产物） |
+| 工具链 | uv、pytest、Ruff |
+
+## 架构概览
+
+```
+上传(MinIO 对象 + DB 记录/任务) → worker：解析 → 传统 NLP 流水线 → 切块 → 向量化
+     → 快照原子发布(data_revision) → 运行时索引缓存
+提问 → 查询预处理 → BM25 与向量双路召回 → RRF 融合 → 规则重排 → 证据门槛/拒答
+     → 上下文构建(带引用预算) → 生成 → 引用校验 → 审计(qa_request/qa_citation/qa_feedback)
+```
+
+数据按 `tenant_id` 隔离；权限由文档级 `uploader_user_id / visibility / org_tag_id` 承载，检索与引用读取时逐条复核。内部以单一「主空间」挂载快照与任务，知识库不再作为产品概念暴露。
+
+## 前置要求
+
+- WSL + Docker：运行 `pgvector/pgvector:pg17` 容器（端口 `5433 -> 5432`）与 MinIO 服务（本机 `127.0.0.1:9000`）。
+- `uv`（管理 Python 依赖）、`node`/`npm`（前端构建，可选）。
+- 百炼模型凭证：`MODEL_BASE_URL` 与 `DASHSCOPE_API_KEY`（缺失时问答直接报 `model_auth_error`，不静默回落 Mock）。
 
 ## 快速开始
 
-数据库运行在 WSL docker 容器 `pgvector` 中（镜像 `pgvector/pgvector:pg17`，端口映射 `5433 -> 5432`，账号 `postgres`）。本项目使用独立数据库 `nlp_rag`，pgvector 扩展由首版迁移自动安装。原文件存储使用 MinIO，本机 endpoint 为 `127.0.0.1:9000`，桶为 `nlprag`。
+在 WSL Docker 中准备数据库容器（首次）：
 
-1. 确认 PostgreSQL 容器运行：`wsl docker ps | grep pgvector`；按实际环境准备数据库容器及凭证。
-2. 建库（一次性，首次已执行）：`wsl docker exec -u postgres pgvector psql -c "CREATE DATABASE nlp_rag ENCODING 'UTF8' TEMPLATE template0"`
-3. 安装依赖：`uv sync`。
-4. 配置环境：`cp .env.example .env`；填写 `API_TOKEN`、模型凭证及 MinIO 配置。MinIO 的 `MINIO_ENDPOINT=127.0.0.1:9000`、`MINIO_BUCKET=nlprag`、`MINIO_ACCESS_KEY=<用户名>`、`MINIO_SECURE=false` 为本机配置示例；`MINIO_SECRET_KEY` 通过安全渠道设置，确保桶 `nlprag` 可访问。API 与 worker 必须使用相同的 endpoint、桶、凭证与传输配置，不提交 `.env`。
-5. 执行迁移：`uv run alembic upgrade head`。
-6. 初始化种子数据：`uv run python -m scripts.seed`。
-7. 数据库能力验证（PG 版本、pgvector 版本、向量读写往返）：`uv run python -m scripts.verify_db`。
-8. 启动服务：`uv run uvicorn app.main:app --reload`。
-   - 接口文档 http://127.0.0.1:8000/docs
-   - 健康检查 `GET /healthz`（存活）、`GET /readyz`（就绪）；探针通过不代表 worker 或付费模型可用，仍需单独验证 MinIO 原文件读写，详见部署手册。
-9. 启动前端（可选，开发模式）：`cd frontend && npm install && npm run dev`，访问 http://127.0.0.1:5173；
-   生产模式 `npm run build` 后由后端同源托管 `frontend/dist`，直接访问 http://127.0.0.1:8000。
-10. 常驻 worker（上传文档/重建索引必需）：`uv run python -m app.workers`。
+```bash
+wsl docker run -d --name pgvector -e POSTGRES_PASSWORD=postgres -p 5433:5432 pgvector/pgvector:pg17
+wsl docker exec -u postgres pgvector psql -c "CREATE DATABASE nlp_rag ENCODING 'UTF8' TEMPLATE template0"
+```
 
-注：若 `127.0.0.1:5433` 连不上，用 `wsl hostname -I` 获取 WSL IP 填入 `.env` 的 `PG_HOST`。`127.0.0.1:9000` 仅适用于 API 和 worker 都能通过各自的回环地址访问同一 MinIO 的环境；跨容器或跨主机部署时应改成双方均可访问的地址。
+安装依赖并配置：
 
-**原文件与切换风险**：对象键采用 `YYYY/MM/DD/用户ID/文件名去扩展名/原始文件名`，例如 `2026/11/07/123/报告/报告.pdf`。同一对象键已存在时先删除再上传；若上传失败，原对象可能无法恢复，操作前应确保可恢复备份。旧本地文件及对应数据库记录选择彻底删除、不迁移；应先停止写入、核对范围并制定备份和恢复方案，再由运维人员执行，详见部署手册。
+```bash
+uv sync
+cp .env.example .env       # 填写 API_TOKEN、模型凭证与 MinIO 配置（不提交 .env）
+```
 
-**认证说明**：首期使用静态 API Token（环境变量 `API_TOKEN`），请求头 `X-API-Token: <token>` 或 `Authorization: Bearer <token>`。tenant_id/user_id 从服务端凭证解析，不信任请求体。
+`.env` 关键项（完整分组见 [部署与运维手册](docs/部署与运维.md)）：
 
-**测试**：`uv run pytest`（未启动数据库时集成测试自动跳过）。
+```dotenv
+API_TOKEN=change-me
+MODEL_BASE_URL=<百炼兼容接口地址>
+DASHSCOPE_API_KEY=<密钥>
+MINIO_ENDPOINT=127.0.0.1:9000
+MINIO_BUCKET=nlprag
+MINIO_ACCESS_KEY=<用户名>
+MINIO_SECRET_KEY=<安全渠道注入>
+MINIO_SECURE=false
+```
+
+迁移、初始化并启动：
+
+```bash
+uv run alembic upgrade head          # pgvector 扩展与建表由迁移安装
+uv run python -m scripts.seed        # 确保主空间存在（幂等）
+uv run uvicorn app.main:app --reload # API，http://127.0.0.1:8000，文档 /docs
+uv run python -m app.workers         # 常驻 worker（上传/重建必需，另开终端）
+```
+
+访问 **http://127.0.0.1:8000**（生产模式下由后端同源托管前端构建产物）。健康检查：`GET /healthz`（存活）、`GET /readyz`（就绪，仅校验数据库与 pgvector，不校验 MinIO/worker）。
+
+前端开发模式（可选，热更新，API 代理到 :8000）：
+
+```bash
+cd frontend && npm install && npm run dev   # http://127.0.0.1:5173
+```
+
+## 认证与安全
+
+- **用户体系**：`POST /auth/register`、`POST /auth/login` 签发 JWT（HS256），口令 scrypt 哈希。
+- **管理员引导**：登录页「管理员令牌」输入 `.env` 的 `API_TOKEN`（请求头 `X-API-Token` 或 `Authorization: Bearer`）进入后台，在「用户管理」将真实用户提升为 `is_admin`；系统始终保留最后一名管理员。
+- 凭证仅从服务端解析，不信任请求体；日志与错误响应不记录正文、密钥或内部路径。
+
+## 数据组织与存储
+
+- **归属 × 可见性**：组织公开 = 所有人可检索；组织私有 = 上传者与该组织成员；个人公开 = 所有人；个人私有 = 仅上传者。删除组织标签会使该组织文档退回上传者个人归属并即时生效。
+- **原文件对象键**：`年/月/日/用户ID/文件名去扩展名/原始文件名`（不改名），例如 `2026/11/08/123/报告/报告.pdf`；数据库仅存不含凭据的 `s3://<bucket>/<编码key>` 与内容 SHA-256。
+- **同名先删后传**：上传经持久写入屏障串行，删除旧对象后若上传失败原文件可能不可恢复——重要文件请事先独立备份。旧本地存储及记录已在迁移时彻底清除，详见部署手册。
+
+## API 概览
+
+| 领域 | 端点 | 说明 |
+| --- | --- | --- |
+| 认证 | `POST /auth/register` · `POST /auth/login` · `GET /auth/me` | 注册 / 登录 / 当前用户 |
+| 文档 | `POST /documents` · `GET /documents` · `PATCH /documents/{id}` · `DELETE /documents/{id}` | 上传（scope+visibility）/ 全局清单 / 改归属与可见性 / 删除 |
+| 问答 | `POST /qa` · `POST /qa/stream`(SSE) · `GET /citations/{id}` · `POST /feedback` | 问答（kb_id 缺省=主空间）/ 引用详情 / 反馈 |
+| 检索调试 | `POST /retrieval/debug` | 双路召回/融合/重排/门槛明细 |
+| 任务 | `GET /jobs/{id}` | 处理状态（status+stage+error） |
+| 会话 | `GET/POST /conversations` · `GET/DELETE /conversations/{id}` | 任务列表 / 新建 / 历史还原 / 删除 |
+| 管理面 | `/admin/org-tags*` · `/admin/users*` · `POST /admin/reindex` | 组织标签 / 用户 / 全量重建（管理员） |
+| 内部兼容 | `/kbs*` | 快照索引以 kb_id 为键的内部实现，前端不使用 |
+
+接口文档以运行实例的 `/docs`（OpenAPI）为准。
+
+## 测试
+
+```bash
+uv run pytest                 # 离线单元 + 隔离数据库集成/评测；未提供隔离库时集成自动跳过
+node --test frontend/tests/api.test.js   # 前端 API 客户端测试
+```
+
+- 集成/评测测试使用**显式随机空白隔离库**（`NLP_RAG_TEST_DATABASE_URL`）与内存 fake MinIO，绝不连接共享开发库或正式桶。
+- 当前规模：424 项测试通过（静态检查 Ruff 全绿）。
+- 评测 harness 与消融实验见 `tests/evaluation/`（指标 Recall@5 / Hit@5 / MRR@10 / 拒答率），种子评测集 26 题用于回归。
 
 ## 项目结构
 
 ```text
 nlp-powered-rag-system/
 ├── app/
-│   ├── main.py           # FastAPI 入口与健康检查
-│   ├── api/              # 路由与依赖项：auth documents 知识库(内部) 任务 检索 问答 admin（管理面）
-│   ├── core/             # 配置 认证 日志 错误处理
-│   ├── db/               # ORM 模型 数据库会话
-│   ├── parsers/          # TXT Markdown DOCX PDF 文档解析
-│   ├── nlp/              # 清洗 分句 分词 关键词 规则切块
-│   ├── indexing/         # 索引构建 快照发布 缓存装载
-│   ├── retrieval/        # BM25 向量召回 RRF 规则重排
-│   ├── generation/       # 提示词 上下文 答案与引用校验
-│   ├── gateways/         # 向量模型和问答模型适配
-│   ├── workers/          # 导入任务 重试 清理
-│   └── schemas/          # 请求 响应 内部数据契约
-├── frontend/             # Vue3 + Vite 传统后台（对话检索/文档管理/组织标签/用户管理/系统设置）
-├── migrations/           # Alembic 迁移（0001 建表基线）
-├── resources/
-│   ├── dictionaries/     # 领域词典
-│   └── stopwords/        # 停用词资源
-├── tests/
-│   ├── fixtures/         # 测试文档及标准问答
-│   ├── unit/             # 单元测试
-│   ├── integration/      # 集成测试（无数据库自动跳过）
-│   └── evaluation/       # 检索与答案评测预留
-├── scripts/
-│   ├── seed.py           # 种子数据
-│   └── verify_db.py      # 数据库能力与向量读写验证
-├── docs/                 # 实现文档（V1.1）与开发计划
-├── .env.example          # 环境变量模板 无真实密钥
-├── .python-version       # 推荐 Python 3.12
-└── pyproject.toml        # 项目元数据 依赖声明 检查工具配置
+│   ├── main.py            # FastAPI 入口、中间件与健康检查
+│   ├── api/               # 路由与授权：auth/documents/conversations/jobs/qa/retrieval/admin/kbs
+│   ├── core/              # 配置、认证、日志、错误
+│   ├── db/                # ORM 模型、会话、主空间、上传屏障
+│   ├── storage.py         # MinIO 原文件存储（禁用重试、单分片 PUT）
+│   ├── parsers/           # TXT / Markdown / DOCX / PDF 解析与三重校验
+│   ├── nlp/               # 清洗、分句、分词、关键词、规则切块
+│   ├── indexing/          # 快照构建、原子发布、缓存装载、物理清理
+│   ├── retrieval/         # BM25 与向量召回、RRF 融合、规则重排
+│   ├── generation/        # 提示词、上下文、答案与引用校验、问答审计
+│   ├── gateways/          # 向量/问答模型适配（重试、预算、缓存）
+│   └── workers/           # 租约领取、心跳、过期恢复、清理调度
+├── frontend/              # Vue3 + Vite 传统后台（任务/文档管理/组织标签/用户管理/系统设置）
+├── migrations/            # Alembic 迁移（0001 建表基线 … 0006 上传屏障）
+├── resources/             # 领域词典与停用词
+├── tests/                 # unit / integration / evaluation / fixtures / support(fake 存储)
+├── scripts/               # seed · verify_db · backup_drill · purge_legacy_uploads
+├── docs/                  # 部署与运维手册
+└── pyproject.toml         # 依赖与工具配置（uv / pytest / Ruff）
 ```
 
-## 基础技术配置
+## 运维与部署
 
-| 项目 | 预设 |
-| --- | --- |
-| Python | 推荐 3.12，依赖声明支持 3.11 与 3.12 |
-| 后端框架 | FastAPI |
-| 数据库与向量存储 | PostgreSQL 16/17 + pgvector |
-| 原文件存储 | MinIO（本机 `127.0.0.1:9000`，桶 `nlprag`） |
-| 数据访问与迁移 | SQLAlchemy 2、psycopg 3、pgvector Python 绑定、Alembic |
-| 传统 NLP | jieba 规则处理 TF-IDF BM25 |
-| 向量模型 | text-embedding-v4，1024 维 |
-| 问答模型 | qwen3.8-flash |
-| 模型接入 | 百炼 OpenAI 兼容接口 |
-| 前端 | Vue 3 + Vite 传统后台管理界面（任务/历史对话 · 文档管理 · 组织标签 · 用户管理 · 系统设置） |
-| 开发工具 | uv pytest Ruff |
+完整上线步骤、环境变量分组速查、管理员操作、备份恢复演练（pg_dump 往返 + 向量逐块比对）与检查表见 **[docs/部署与运维.md](docs/部署与运维.md)**。要点：数据库与 MinIO 需分别备份并验证一致恢复点；worker 不自动重排失败任务，生产需外部定时补投。
 
-依赖在集成测试通过后锁定完整版本。设计约束与模块说明见 `docs/` 内的实现文档（V1.1）与开发计划。
+## 里程碑
 
-## 后续开发顺序
+M0–M8 已全部完成：配置/认证/日志/错误 → 数据层（PostgreSQL+pgvector）→ 四格式解析与传统 NLP 流水线 → 模型网关 → 快照与原子发布 → worker 租约 → 双路检索与 RRF → 问答引用与审计 → 管理接口 → 评测与交付；随后完成管理后台/任务模块改造、去知识库化（组织/个人归属）与 MinIO 原文件存储迁移。演进方向：多租户与 kb_member RBAC 深化、对象存储版本化与孤儿对象巡检、检索阈值以更大真实语料校准。
 
-按 `docs/开发计划.md` 的里程碑推进：M2 解析与 NLP 流水线 → M3 模型网关 → M4 索引与任务 → M5 检索 → M6 问答与引用 → M7 管理接口 → M8 评测与交付。
+## 许可证
+
+本仓库当前未声明开源许可证；如需对外开源请先补充 `LICENSE`。
