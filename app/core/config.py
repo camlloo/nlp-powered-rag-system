@@ -53,6 +53,16 @@ class Settings(BaseSettings):
     model_timeout_seconds: float = 30.0
     vector_backend: str = "application_exact"
 
+    # 模型网关：重试/预算/输入预算/缓存（实现文档 §6.2；SDK 重试关闭，网关统一控制）
+    retry_max_attempts: int = 3
+    retry_base_delay_seconds: float = 0.5
+    retry_max_delay_seconds: float = 8.0
+    embedding_input_max_bytes: int = 16384
+    model_daily_token_budget: int = 1_000_000  # 0 表示不限
+    model_per_file_token_budget: int = 100_000  # 0 表示不限
+    chat_max_output_tokens: int = 1200
+    vector_cache_max_entries: int = 10000
+
     chunk_max_chars: int = 700
     chunk_overlap_chars: int = 100
     chunk_hard_max_chars: int = 1000
@@ -84,6 +94,13 @@ class Settings(BaseSettings):
         max_chars = info.data.get("chunk_max_chars")
         if max_chars is not None and value >= max_chars:
             raise ValueError("CHUNK_MIN_CHARS 必须小于 CHUNK_MAX_CHARS")
+        return value
+
+    @field_validator("retry_max_attempts")
+    @classmethod
+    def _check_retry_attempts(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("RETRY_MAX_ATTEMPTS 至少为 1")
         return value
 
     @field_validator("embedding_dim")
