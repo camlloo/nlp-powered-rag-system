@@ -11,7 +11,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.api import health
+from app.api import health, jobs, kbs
 from app.api.deps import SettingsDep
 from app.core.config import get_settings
 from app.core.errors import register_exception_handlers
@@ -54,6 +54,8 @@ def create_app() -> FastAPI:
     register_exception_handlers(app)
 
     app.include_router(health.router)
+    app.include_router(kbs.router, prefix=settings.api_prefix)
+    app.include_router(jobs.router, prefix=settings.api_prefix)
 
     @app.get("/", include_in_schema=False)
     def root(settings: SettingsDep) -> dict:

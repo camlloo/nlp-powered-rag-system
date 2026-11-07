@@ -1,1 +1,1 @@
-"""Index construction and publication package placeholder."""
+"""Index construction, publication and runtime cache loading."""

@@ -63,6 +63,12 @@ class Settings(BaseSettings):
     chat_max_output_tokens: int = 1200
     vector_cache_max_entries: int = 10000
 
+    # 索引与 worker（实现文档 §5.2/§9.4/§13.1）
+    storage_dir: str = "data"  # 原始文件根目录，storage_uri 形如 uploads/<随机名>
+    worker_lease_seconds: int = 300
+    worker_poll_interval_seconds: float = 2.0
+    index_cache_budget_mb: int = 256  # 单进程索引缓存起始预算（向量+文本+词项）
+
     chunk_max_chars: int = 700
     chunk_overlap_chars: int = 100
     chunk_hard_max_chars: int = 1000

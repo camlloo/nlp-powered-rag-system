@@ -54,8 +54,19 @@ def save_upload(
 
     uri 形如 uploads/<随机名>.<ext>；数据库保存路径与摘要，文件本体不入库。
     """
-    directory = upload_dir or DEFAULT_UPLOAD_DIR
+    directory = Path(upload_dir or DEFAULT_UPLOAD_DIR)
     directory.mkdir(parents=True, exist_ok=True)
     name = f"{secrets.token_hex(16)}{_EXT_BY_FORMAT[fmt]}"
     (directory / name).write_bytes(payload)
     return f"uploads/{name}", hashlib.sha256(payload).hexdigest()
+
+
+def load_upload(storage_uri: str, settings: Settings) -> bytes:
+    """按 storage_uri 读取原始文件；路径必须位于存储根目录内（防目录穿越）。"""
+    root = Path(settings.storage_dir).resolve()
+    target = (root / storage_uri).resolve()
+    if not target.is_relative_to(root):
+        raise ValueError(f"非法存储路径：{storage_uri}")
+    if not target.is_file():
+        raise FileNotFoundError(f"存储文件不存在：{storage_uri}")
+    return target.read_bytes()
