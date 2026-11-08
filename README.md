@@ -6,7 +6,7 @@
 
 Python 3.11–3.12 · FastAPI · PostgreSQL + pgvector · MinIO · Vue 3
 
-项目包名为 `nlp-powered-rag-system`。[代码仓库](https://gitee.com/yyd520/nlp-powered-rag-system)
+项目包名为 `nlp-powered-rag-system`。
 
 ## 目录
 
