@@ -122,13 +122,13 @@ watch(
 
     <div ref="threadEl" class="thread panel-body">
       <div v-if="!messages.length" class="empty intro">
-        <svg viewBox="0 0 140 90" width="140" height="90" fill="none" stroke-linecap="round" aria-hidden="true">
-          <path d="M12 70 C 42 52, 70 38, 112 16" stroke="var(--teal)" stroke-width="2.5" />
-          <path d="M112 16 l-15 3 M112 16 l-4 14" stroke="var(--red)" stroke-width="2.5" />
-          <path d="M18 22 l6 -9 6 9 8 -11" stroke="var(--red)" stroke-width="2.5" />
-          <path d="M96 62 q 9 -7 18 0 t 18 0" stroke="var(--ink)" stroke-width="2" />
-          <circle cx="30" cy="46" r="3" stroke="var(--yellow)" stroke-width="2.5" fill="rgba(255,217,51,.5)" />
+        <svg viewBox="0 0 120 76" width="120" height="76" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
+          <rect x="6" y="10" width="78" height="26" rx="4" />
+          <path d="M18 20h50M18 28h34" opacity=".5" />
+          <rect x="36" y="44" width="78" height="26" rx="4" opacity=".55" />
+          <path d="M48 54h50M48 62h34" opacity=".35" />
         </svg>
+        <p>提出第一个问题，回答与引用会出现在这里</p>
       </div>
 
       <div v-for="(msg, i) in messages" :key="i" class="msg" :class="`msg-${msg.role}`">
@@ -181,7 +181,7 @@ watch(
       </div>
 
       <div v-if="busy" class="thinking">
-        <span class="dot badge-run" style="width: 6px; height: 6px"></span>
+        <span class="dot thinking-dot"></span>
         检索中…
       </div>
     </div>
@@ -198,7 +198,7 @@ watch(
           </div>
           <div class="dbg-cols">
             <div class="dbg-col">
-              <div class="dbg-head"><span class="dot" style="background: var(--amber)"></span> 词项通道</div>
+              <div class="dbg-head"><span class="dot" style="background: var(--warn)"></span> 词项通道</div>
               <ol class="dbg-list">
                 <li v-for="h in debug.lexical.slice(0, 8)" :key="h.chunk_id">
                   <span class="cid">#{{ h.chunk_id }}</span>
@@ -207,7 +207,7 @@ watch(
               </ol>
             </div>
             <div class="dbg-col">
-              <div class="dbg-head"><span class="dot" style="background: var(--teal)"></span> 向量通道</div>
+              <div class="dbg-head"><span class="dot" style="background: var(--success)"></span> 向量通道</div>
               <ol class="dbg-list">
                 <li v-for="h in debug.vector.slice(0, 8)" :key="h.chunk_id">
                   <span class="cid">#{{ h.chunk_id }}</span>
@@ -216,7 +216,7 @@ watch(
               </ol>
             </div>
             <div class="dbg-col">
-              <div class="dbg-head"><span class="dot" style="background: var(--ink)"></span> 融合排序</div>
+              <div class="dbg-head"><span class="dot" style="background: var(--text)"></span> 融合排序</div>
               <ol class="dbg-list">
                 <li v-for="h in debug.fused.slice(0, 8)" :key="h.chunk_id">
                   <span class="cid">#{{ h.chunk_id }}</span>
@@ -251,110 +251,92 @@ watch(
 <style scoped>
 .ask-panel { display: flex; flex-direction: column; min-height: 0; height: 100%; }
 
-/* 书写区：笔记本横线（与回答行高对齐） */
+/* 对话流：平铺白底，无纸纹 */
 .thread {
   overflow-y: auto;
   flex: 1;
   min-height: 120px;
-  background-image: repeating-linear-gradient(
-    transparent,
-    transparent 27px,
-    rgba(78, 205, 196, 0.14) 27px,
-    rgba(78, 205, 196, 0.14) 28px
-  );
 }
+.intro { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 48px 0; }
+.intro p { margin: 4px 0 0; }
 
-/* 对话节奏：大间距 */
-.msg { margin: 28px 0; }
+/* 对话节奏 */
+.msg { margin: 24px 0; }
 .msg-user { display: flex; flex-direction: column; align-items: flex-end; }
 .bubble-user {
-  background: rgba(255, 217, 51, 0.5); /* 荧光笔划重点 */
-  border: 2px dashed var(--ink);
-  border-radius: var(--radius);
+  background: var(--neutral-bg);
+  border-radius: var(--radius-lg);
   padding: 8px 14px;
   max-width: 72%;
   font-size: 14.5px;
+  color: var(--text);
   white-space: pre-wrap;
   word-break: break-word;
-  transform: rotate(0.6deg);
 }
 .user-actions {
   margin-top: 5px;
   display: flex;
   gap: 6px;
   opacity: 0;
-  transition: opacity 0.15s ease;
+  transition: opacity var(--t);
 }
 .msg-user:hover .user-actions { opacity: 1; }
 .act-btn {
   border: none;
   background: transparent;
-  color: var(--muted);
-  font-family: var(--hand);
+  color: var(--text-2);
   font-size: 12px;
-  padding: 2px 4px;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  transition: background var(--t), color var(--t);
 }
-.act-btn:hover { color: var(--red); text-decoration: underline wavy var(--red) 1px; text-underline-offset: 3px; }
+.act-btn:hover { background: var(--hover); color: var(--text); }
 
-/* 回答：平铺正文（手写感标题字体仅用于强调） */
+/* 回答：平铺正文（宽屏下保持可读行宽） */
 .answer-md {
   font-size: 15px;
-  line-height: 1.85;
-  color: var(--ink);
+  line-height: 1.8;
+  color: var(--text);
   word-break: break-word;
+  max-width: 940px;
 }
 .answer-md :deep(p) { margin: 0 0 10px; }
 .answer-md :deep(p:last-child) { margin-bottom: 0; }
 .answer-md :deep(ul), .answer-md :deep(ol) { margin: 4px 0 12px; padding-left: 22px; }
 .answer-md :deep(li) { margin: 4px 0; }
-.answer-md :deep(strong) {
-  color: var(--ink);
-  background: rgba(255, 217, 51, 0.45); /* 荧光笔强调 */
-  padding: 0 3px;
-}
+.answer-md :deep(strong) { color: var(--text); font-weight: 600; }
 .answer-md :deep(code) {
   font-family: var(--sans);
   font-size: 13px;
-  background: rgba(78, 205, 196, 0.22);
-  border: 1.5px dashed var(--ink);
-  border-radius: var(--radius);
+  background: var(--neutral-bg);
+  border-radius: var(--radius-sm);
   padding: 1px 5px;
 }
 .answer-md :deep(pre) {
-  background: var(--paper);
-  border: 2px dashed var(--ink);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 10px 12px;
   overflow-x: auto;
   margin: 8px 0 12px;
-  box-shadow: 3px 3px 0px var(--yellow);
 }
-.answer-md :deep(pre code) { background: transparent; border: none; padding: 0; }
-.answer-md :deep(h1), .answer-md :deep(h2), .answer-md :deep(h3) {
-  font-family: var(--hand);
-  transform: rotate(-0.4deg);
-  margin: 14px 0 8px;
-}
-.answer-md :deep(blockquote) {
-  border: 2px dashed var(--teal);
-  border-radius: var(--radius);
-  margin: 8px 0;
-  padding: 4px 12px;
-  color: var(--ink);
-  background: rgba(78, 205, 196, 0.12);
-}
+.answer-md :deep(pre code) { background: transparent; padding: 0; }
+.answer-md :deep(h1), .answer-md :deep(h2), .answer-md :deep(h3) { font-weight: 600; margin: 14px 0 8px; }
+.answer-md :deep(blockquote) { margin: 8px 0 8px 4px; padding-left: 12px; color: var(--text-2); }
+.answer-md :deep(a) { color: var(--blue); text-decoration: none; }
+.answer-md :deep(a:hover) { text-decoration: underline; }
 .answer-md :deep(.seal) { vertical-align: 1px; }
 
-.streaming-cursor { color: var(--red); font-weight: 700; animation: cursor-jitter 0.5s steps(2) infinite; }
-@keyframes cursor-jitter {
-  0% { transform: rotate(-4deg) translateY(0); }
-  50% { transform: rotate(3deg) translateY(-1px); opacity: 0.5; }
-  100% { transform: rotate(-2deg); opacity: 1; }
+/* 流式光标：平滑透明度闪烁（reduced-motion 时由全局规则关闭） */
+.streaming-cursor { color: var(--text-3); animation: cursor-blink 1s ease-in-out infinite; }
+@keyframes cursor-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.2; }
 }
 
 .status-note { font-size: 14px; }
-.status-note strong { display: block; transform: rotate(-0.3deg); }
-.status-note span { color: var(--muted); font-size: 13px; }
+.status-note strong { display: block; font-weight: 600; }
+.status-note span { color: var(--text-2); font-size: 13px; }
 
 .cite-strip {
   margin-top: 12px;
@@ -364,14 +346,13 @@ watch(
   align-items: center;
 }
 .cite-chip {
-  border: 1.5px dashed var(--ink);
-  padding: 1px 7px;
-  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  padding: 1px 8px;
+  border-radius: var(--radius-sm);
   font-size: 11px;
-  background: rgba(255, 217, 51, 0.25);
-  transform: rotate(-0.5deg);
+  background: var(--neutral-bg);
+  color: var(--text-2);
 }
-.cite-chip:nth-child(2n) { transform: rotate(0.7deg); }
 
 .assistant-meta {
   margin-top: 10px;
@@ -379,41 +360,59 @@ watch(
   align-items: center;
   gap: 12px;
   opacity: 0;
-  transition: opacity 0.15s ease;
+  transition: opacity var(--t);
 }
 .msg-assistant:hover .assistant-meta { opacity: 1; }
-.fb-done { color: var(--teal); font-family: var(--hand); font-size: 12px; }
+.fb-done { color: var(--success); font-size: 12px; }
 
-.thinking { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.thinking { font-size: 12px; color: var(--text-2); display: flex; align-items: center; gap: 6px; }
+.thinking-dot { width: 6px; height: 6px; background: var(--blue); animation: soft-pulse 1.2s ease-in-out infinite; }
+@keyframes soft-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
 
 /* 检索调试 */
-.debug { border-top: 2px dashed var(--ink); background: var(--paper-alt); }
+.debug { border-top: 1px solid var(--border); background: var(--bg-alt); }
 .debug summary {
   padding: 8px 14px;
   font-size: 12px;
-  font-weight: 700;
-  color: var(--muted);
+  font-weight: 600;
+  color: var(--text-2);
   cursor: pointer;
+  transition: background var(--t), color var(--t);
 }
-.debug summary:hover { color: var(--red); }
+.debug summary:hover { background: var(--hover); color: var(--text); }
 .debug-body { padding: 4px 14px 12px; }
-.dbg-meta { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+.dbg-meta { font-size: 12px; color: var(--text-2); margin-bottom: 8px; }
 .dbg-cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-.dbg-head { font-size: 12px; font-weight: 700; display: flex; align-items: center; gap: 6px; margin-bottom: 4px; color: var(--ink); }
+.dbg-head { font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 6px; margin-bottom: 4px; color: var(--text); }
 .dbg-list { list-style: none; margin: 0; padding: 0; font-size: 12px; }
-.dbg-list li { display: flex; justify-content: space-between; padding: 1px 0; border-bottom: 1.5px dashed rgba(44, 44, 44, 0.2); }
-.cid { color: var(--red); font-weight: 700; }
-.score { color: var(--ink); }
-.dbg-gate { margin-top: 8px; font-size: 12px; color: var(--muted); }
+.dbg-list li { display: flex; justify-content: space-between; padding: 2px 0; border-bottom: 1px solid var(--divider); }
+.cid { color: var(--blue); font-weight: 500; }
+.score { color: var(--text-2); }
+.dbg-gate { margin-top: 8px; font-size: 12px; color: var(--text-2); }
 
 /* 提问表单 */
 .ask-form {
-  border-top: 2px dashed var(--ink);
+  border-top: 1px solid var(--border);
   padding: 12px 14px;
   display: flex;
   gap: 10px;
   align-items: flex-end;
 }
-.ask-form textarea { flex: 1; }
-.ask-form .btn { height: 40px; min-width: 88px; }
+.ask-form textarea {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+}
+.ask-form textarea:focus-visible {
+  outline: none;
+  border-bottom-color: var(--border);
+  border-color: var(--blue);
+  box-shadow: 0 0 0 2px rgba(35, 131, 226, 0.2);
+}
+.ask-form .btn { height: 38px; min-width: 88px; }
 </style>

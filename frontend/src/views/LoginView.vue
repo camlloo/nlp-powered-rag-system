@@ -106,30 +106,39 @@ async function submit() {
   align-items: center;
   justify-content: center;
 }
-.login-card { width: min(400px, calc(100vw - 32px)); padding: 28px 24px 22px; }
-.brand-line { font-size: 24px; display: block; transform: rotate(-1deg); }
+.login-card { width: min(400px, calc(100vw - 32px)); padding: 28px 24px 22px; box-shadow: var(--shadow-md); }
+.brand-line { font-size: 22px; font-weight: 600; display: block; }
 .sub { margin: 2px 0 16px; }
+/* Notion 分段控件 */
 .mode-switch {
   display: flex;
-  gap: 0;
-  margin-bottom: 16px;
-  border: 2px dashed var(--ink);
+  gap: 3px;
+  margin-bottom: 18px;
+  background: var(--neutral-bg);
   border-radius: var(--radius);
-  overflow: hidden;
+  padding: 3px;
 }
 .mode-switch button {
   flex: 1;
-  border: none;
+  border: 1px solid transparent;
   background: transparent;
-  color: var(--muted);
-  font-family: var(--hand);
-  font-weight: 700;
-  padding: 6px 0;
+  color: var(--text-2);
+  font-weight: 500;
+  padding: 5px 0;
   font-size: 13px;
+  border-radius: var(--radius-sm);
+  transition: background var(--t), color var(--t);
 }
-.mode-switch button.active { background: var(--ink); color: var(--paper); }
+.mode-switch button:hover:not(.active) { background: var(--hover); color: var(--text); }
+.mode-switch button.active {
+  background: var(--bg);
+  color: var(--text);
+  font-weight: 600;
+  border-color: var(--border);
+  box-shadow: var(--shadow-sm);
+}
 form label { display: block; margin-bottom: 12px; }
-.fld-label { display: block; font-size: 13px; font-weight: 700; margin-bottom: 4px; }
-.token-hint { font-size: 12px; color: var(--muted); margin: -4px 0 10px; }
+.fld-label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; color: var(--text); }
+.token-hint { font-size: 12px; color: var(--text-2); margin: -4px 0 10px; }
 .submit-btn { width: 100%; margin-top: 6px; }
 </style>

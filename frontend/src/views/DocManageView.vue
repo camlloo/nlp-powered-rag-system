@@ -242,6 +242,7 @@ const STATUS_TEXT = {
 </template>
 
 <style scoped>
+/* 表格/按钮/chip 等公共件样式见全局 style.css */
 .doc-layout {
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr);
@@ -253,19 +254,9 @@ const STATUS_TEXT = {
 .fld-label {
   display: block;
   font-size: 13px;
-  font-weight: 700;
-  color: var(--ink);
+  font-weight: 600;
+  color: var(--text);
   margin-bottom: 5px;
-}
-.scope-select {
-  width: 100%;
-  border: 2px dashed var(--ink);
-  border-radius: var(--radius);
-  background: var(--paper);
-  color: var(--ink);
-  padding: 8px 10px;
-  font-family: var(--sans);
-  font-size: 14px;
 }
 .vis-group { display: flex; gap: 8px; }
 .vis-item {
@@ -273,112 +264,61 @@ const STATUS_TEXT = {
   display: flex;
   align-items: center;
   gap: 7px;
-  border: 2px dashed var(--ink);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 7px 9px;
   cursor: pointer;
   font-size: 13px;
-  font-weight: 700;
-  color: var(--ink);
+  font-weight: 600;
+  color: var(--text);
+  background: var(--bg);
+  transition: background var(--t);
 }
-.vis-item small { display: block; font-weight: 400; color: var(--muted); font-size: 11px; }
-.vis-item input { accent-color: var(--red); }
-.vis-item:has(input:checked) { background: rgba(255, 217, 51, 0.35); border-color: var(--ink); }
+.vis-item:hover { background: var(--hover); }
+.vis-item small { display: block; font-weight: 400; color: var(--text-2); font-size: 11px; }
+.vis-item input { accent-color: var(--blue); }
+.vis-item:has(input:checked) { background: var(--active); }
 
 .upload-slot {
   width: 100%;
-  border: 2px dashed var(--ink);
-  background: rgba(255, 217, 51, 0.18);
-  color: var(--muted);
+  border: 1px solid var(--border);
+  background: var(--bg-alt);
+  color: var(--text-2);
   border-radius: var(--radius);
   padding: 12px 8px;
   font-size: 12.5px;
-  font-weight: 700;
+  font-weight: 500;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  transform: rotate(-0.3deg);
-  transition: all 0.2s ease-in-out;
+  transition: background var(--t), color var(--t);
 }
-.upload-slot:hover {
-  border-color: var(--red);
-  color: var(--ink);
-  transform: translate(1px, 1px) rotate(0.3deg);
-  box-shadow: 3px 3px 0px var(--teal);
-}
+.upload-slot:hover { background: var(--hover); color: var(--text); }
 .upload-plus { font-size: 16px; }
-.hint { margin-top: 12px; }
-.reindex-strip { margin-top: 14px; border-top: 1.5px dashed rgba(44, 44, 44, 0.3); padding-top: 12px; }
+.hint { margin-top: 12px; display: block; }
+.reindex-strip { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 12px; }
 
 .tracked { margin-bottom: 10px; }
 .filter-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
-.chip {
-  border: 1.5px dashed var(--ink);
-  border-radius: var(--radius);
-  background: transparent;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 700;
-  padding: 2px 10px;
-  cursor: pointer;
-  transform: rotate(-0.5deg);
-}
-.chip:hover { color: var(--ink); background: rgba(255, 217, 51, 0.25); }
-.chip.active {
-  background: rgba(255, 217, 51, 0.45);
-  color: var(--ink);
-  box-shadow: 2px 2px 0px var(--red);
-}
-.chip.static { cursor: default; background: rgba(78, 205, 196, 0.22); color: var(--ink); }
-
-.admin-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
-.admin-table th {
-  text-align: left;
-  font-size: 11px;
-  letter-spacing: 0.1em;
-  color: var(--muted);
-  border-bottom: 2px dashed var(--ink);
-  padding: 4px 8px;
-}
-.admin-table td { padding: 7px 8px; border-bottom: 1.5px dashed rgba(44, 44, 44, 0.25); }
-.admin-table tbody tr:hover td { background: rgba(255, 217, 51, 0.14); }
-.admin-table tr.purged { opacity: 0.45; }
 .doc-title {
   max-width: 340px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-weight: 700;
+  font-weight: 600;
 }
-.muted { color: var(--muted); font-size: 12px; }
-.ops { text-align: right; width: 96px; white-space: nowrap; }
 
-.edit-cell { background: var(--paper-alt); }
-.edit-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px; padding: 6px 2px; }
-.edit-fld { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 700; color: var(--muted); }
-.edit-fld > span { letter-spacing: 0.08em; }
-.edit-fld .scope-select { width: 160px; padding: 5px 8px; font-size: 13px; }
-.vis-pick { display: inline-flex; align-items: center; gap: 4px; margin-right: 10px; font-size: 13px; color: var(--ink); cursor: pointer; }
-.vis-pick input { accent-color: var(--red); }
-.edit-ops { display: flex; gap: 8px; }
-.edit-hint { margin: 2px 2px 4px; }
-
-.table-btn {
-  border: none;
-  background: transparent;
-  color: var(--muted);
-  font-family: var(--hand);
-  font-weight: 700;
-  font-size: 12px;
-  cursor: pointer;
-  padding: 0 4px;
-  visibility: hidden;
-}
+/* 行操作仅在悬停时显现（本视图特有） */
+.table-btn { visibility: hidden; }
 .admin-table tbody tr:hover .table-btn { visibility: visible; }
-.table-btn:hover { color: var(--ink); text-decoration: underline wavy var(--teal) 1px; text-underline-offset: 3px; }
-.table-btn.danger:hover { color: var(--red); text-decoration-color: var(--red); }
-.mini { padding: 4px 10px; font-size: 12px; }
+
+.edit-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px; padding: 6px 2px; }
+.edit-fld { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; color: var(--text-2); }
+.edit-fld .scope-select { width: 160px; padding: 5px 8px; font-size: 13px; }
+.vis-pick { display: inline-flex; align-items: center; gap: 4px; margin-right: 10px; font-size: 13px; color: var(--text); cursor: pointer; }
+.vis-pick input { accent-color: var(--blue); }
+.edit-hint { margin: 2px 2px 4px; }
 
 @media (max-width: 860px) {
   .doc-layout { grid-template-columns: 1fr; }

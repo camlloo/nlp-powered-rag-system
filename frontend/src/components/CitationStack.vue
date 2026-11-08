@@ -49,13 +49,12 @@ function locatorText(locator) {
         <span class="eyebrow">{{ citations.length }}</span>
       </div>
       <div class="panel-body stack-body">
-        <div v-if="!citations.length" class="empty-doodle" aria-hidden="true">
-          <svg viewBox="0 0 120 100" width="120" height="100" fill="none" stroke="var(--teal)" stroke-width="2.5" stroke-linecap="round">
-            <path d="M14 78 C 40 60, 62 44, 96 20" />
-            <path d="M96 20 l-14 2 M96 20 l-4 13" stroke="var(--red)" />
-            <path d="M20 24 l6 -8 6 8 8 -10" stroke="var(--red)" />
-            <path d="M28 92 q 8 -6 16 0 t 16 0" stroke="var(--ink)" />
+        <div v-if="!citations.length" class="empty" aria-hidden="true">
+          <svg viewBox="0 0 72 84" width="72" height="84" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" style="display:block;margin:0 auto 8px">
+            <rect x="10" y="8" width="52" height="68" rx="4" />
+            <path d="M22 26h28M22 38h28M22 50h18" opacity=".5" />
           </svg>
+          引用将随回答出现
         </div>
 
         <article
@@ -81,53 +80,57 @@ function locatorText(locator) {
 </template>
 
 <style scoped>
-.stack-col { overflow-y: auto; min-height: 0; transform: rotate(0.3deg); }
+.stack-col { overflow-y: auto; min-height: 0; }
 .stack-panel { height: 100%; display: flex; flex-direction: column; }
 .stack-body { overflow-y: auto; flex: 1; }
-.empty-doodle { display: flex; justify-content: center; padding: 36px 0; transform: rotate(-2deg); }
 
+/* 卡片内为平铺列表块（不嵌套卡片），悬停仅底色变化 */
 .cite-card {
-  border: 2px dashed var(--ink);
   border-radius: var(--radius);
-  background: var(--paper);
-  padding: 12px 12px 10px;
-  margin-bottom: 16px;
+  padding: 10px 10px 10px 26px; /* 左侧预留拖拽手柄位 */
+  margin-bottom: 4px;
   position: relative;
-  transform: rotate(-0.6deg);
-  box-shadow: 3px 3px 0px var(--yellow);
-  transition: all 0.2s ease-in-out;
+  background: transparent;
+  transition: background var(--t);
 }
-.cite-card:nth-child(2n) { transform: rotate(0.5deg); box-shadow: 3px 3px 0px var(--red); }
-/* 图钉装饰 */
+/* Drag Handle Illusion */
 .cite-card::before {
-  content: '';
+  content: '⋮⋮';
   position: absolute;
-  top: -7px;
-  left: 16px;
-  width: 13px;
-  height: 13px;
-  border-radius: 50%;
-  background: var(--red);
-  border: 2px dashed var(--ink);
+  left: 8px;
+  top: 12px;
+  font-size: 12px;
+  line-height: 1;
+  letter-spacing: -3px;
+  color: var(--text-3);
+  opacity: 0;
+  transition: opacity var(--t);
 }
-.cite-card.lit {
-  border-color: var(--red);
-  background: rgba(255, 217, 51, 0.28);
-  box-shadow: 4px 4px 0px var(--red);
-  transform: rotate(0deg) scale(1.02);
-}
+.cite-card:hover { background: var(--hover); }
+.cite-card:hover::before { opacity: 1; }
+.cite-card.lit { background: var(--blue-bg-strong); }
 .cite-card-head { display: flex; align-items: center; gap: 10px; }
-.cite-card .seal { width: 30px; height: 30px; font-size: 14px; }
+.cite-card .seal {
+  width: 26px;
+  height: 26px;
+  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  flex-shrink: 0;
+}
 .cite-doc { display: flex; flex-direction: column; min-width: 0; }
-.cite-title { font-size: 14px; color: var(--ink); }
-.cite-loc { font-size: 11px; color: var(--muted); }
+.cite-title { font-size: 14px; color: var(--text); font-weight: 600; }
+.cite-loc { font-size: 11px; color: var(--text-3); }
 .cite-quote {
   margin: 8px 0 0;
   font-size: 13.5px;
-  color: var(--ink);
-  background: rgba(255, 217, 51, 0.3); /* 荧光笔划句子 */
-  padding: 2px 6px;
-  border-radius: var(--radius);
+  color: var(--text);
+  background: var(--warn-bg); /* 柔和引文高亮 */
+  padding: 1px 4px;
+  border-radius: var(--radius-sm);
   display: inline;
+  line-height: 1.9;
 }
 </style>

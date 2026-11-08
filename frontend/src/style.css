@@ -1,58 +1,60 @@
 /* ============================================================
-   检索台 · 手绘涂鸦风设计令牌
-   笔记本纸张 + 虚线手绘边框 + 三色标记笔（红/蓝绿/黄）
-   禁：渐变 / 平滑阴影 / 等宽字体 / backdrop-blur / 实线边框 / 大圆角
+   检索台 · Notion 风格设计令牌
+   米色底 + 微妙实线边框 + 极低信噪比悬停（仅底色变化）
+   禁：渐变 / 大圆角 / 重阴影 / translate|scale 动画 / 手写字体
    ============================================================ */
 :root {
-  --ink: #2c2c2c;
-  --paper: #fffef5;
-  --paper-alt: #f8f7f0;
-  --red: #ff6b6b;
-  --teal: #4ecdc4;
-  --yellow: #ffd93d;
-  --muted: rgba(44, 44, 44, 0.55);
-  --hand: 'Segoe Print', 'Comic Sans MS', 'Microsoft YaHei', sans-serif;
-  --sans: 'Microsoft YaHei', 'PingFang SC', system-ui, sans-serif;
-  --radius: 4px; /* rounded-sm：轻微不规则 */
-  --shadow-teal: 4px 4px 0px #4ecdc4;
-  --shadow-red: 3px 3px 0px #ff6b6b;
-  --shadow-yellow: 2px 2px 0px #ffd93d;
+  --text: #37352f;           /* 正文主色（Notion 深灰） */
+  --text-2: #6b6b6b;         /* 正文辅色 */
+  --text-3: #9b9a97;         /* 弱化文字 */
+  --bg: #ffffff;             /* 卡片/内容底 */
+  --bg-alt: #f7f6f3;         /* 页面底/侧栏米色 */
+  --hover: #efedea;          /* Block Highlighting：悬停底色 */
+  --active: #e3e1db;         /* Micro-click / 选中底色 */
+  --neutral-bg: #f1f1ef;     /* 中性标签/次级控件底 */
+  --border: #e3e2de;         /* 微妙边框 */
+  --divider: #eeece8;        /* 行分隔 */
+  --accent: #2eaadc;         /* 主按钮蓝 */
+  --accent-hover: #2798c3;
+  --accent-active: #2286ac;
+  --blue: #2383e2;           /* 链接/聚焦/引用 */
+  --blue-bg: rgba(35, 131, 226, 0.08);
+  --blue-bg-strong: rgba(35, 131, 226, 0.16);
+  --danger: #eb5757;         /* 图形红（点/图标） */
+  --danger-strong: #b23c3c;  /* 文本红（AA 对比度） */
+  --danger-bg: rgba(235, 87, 87, 0.1);
+  --success: #0f7b6c;
+  --success-bg: #ddedea;
+  --warn: #9a6e00;           /* 文本黄 */
+  --warn-bg: #fdecc8;
+  --sans: 'Segoe UI', -apple-system, 'Microsoft YaHei', 'PingFang SC', system-ui, sans-serif;
+  --radius-sm: 4px;
+  --radius: 6px;             /* rounded-md */
+  --radius-lg: 8px;          /* rounded-lg */
+  --shadow-sm: 0 1px 2px rgba(15, 15, 15, 0.06), 0 0 1px rgba(15, 15, 15, 0.08);
+  --shadow-md: 0 4px 12px rgba(15, 15, 15, 0.08), 0 0 1px rgba(15, 15, 15, 0.12);
+  --t: 150ms;                /* 效率工具的即时响应 */
 }
 
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
 
-/* 笔记本纸：蓝色横线 + 左侧红色页边线 */
+/* 米色平铺底，无纸纹无页边线 */
 body {
-  background-color: var(--paper);
-  background-image:
-    repeating-linear-gradient(
-      transparent,
-      transparent 27px,
-      rgba(78, 205, 196, 0.16) 27px,
-      rgba(78, 205, 196, 0.16) 28px
-    ),
-    linear-gradient(
-      to right,
-      transparent 0,
-      transparent 42px,
-      rgba(255, 107, 107, 0.3) 42px,
-      rgba(255, 107, 107, 0.3) 44px,
-      transparent 44px
-    );
-  color: var(--ink);
+  background: var(--bg-alt);
+  color: var(--text);
   font-family: var(--sans);
   font-size: 14px;
-  line-height: 1.65;
+  line-height: 1.6;
 }
 #app { min-height: 100vh; }
 
-::selection { background: rgba(255, 217, 51, 0.55); }
+::selection { background: rgba(35, 131, 226, 0.22); }
 
 button { font-family: var(--sans); cursor: pointer; }
-button:focus-visible, input:focus-visible, textarea:focus-visible {
-  outline: 2px dashed var(--red);
-  outline-offset: 2px;
+button:focus-visible {
+  outline: 2px solid rgba(35, 131, 226, 0.4);
+  outline-offset: 1px;
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
@@ -60,196 +62,237 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 
 /* ---------- 版式角色 ---------- */
 .h-serif {
-  font-family: var(--hand);
-  font-weight: 700;
-  letter-spacing: 0.02em;
+  font-family: var(--sans);
+  font-weight: 600;
+  letter-spacing: normal;
+  color: var(--text);
 }
 .eyebrow {
   font-family: var(--sans);
   font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  color: var(--muted);
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--text-3);
 }
-/* 用户名牌：黄标记笔小签（侧边栏/顶栏通用） */
+/* 用户名牌：中性小标签 */
 .user-tag {
-  font-family: var(--hand);
-  font-weight: 700;
+  font-weight: 500;
   font-size: 12px;
-  color: var(--ink);
-  background: rgba(255, 217, 51, 0.4);
-  border: 1.5px dashed var(--ink);
-  border-radius: var(--radius);
+  color: var(--text);
+  background: var(--neutral-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   padding: 1px 8px;
   white-space: nowrap;
 }
-.hand-underline {
-  text-decoration: underline wavy var(--red) 1.5px;
-  text-underline-offset: 5px;
-}
 
-/* ---------- 卡片：虚线 + 硬偏移阴影 + 胶带 ---------- */
+/* ---------- 卡片：白底 + 细边 + 轻阴影（无胶带装饰） ---------- */
 .panel {
-  background: var(--paper);
-  border: 2px dashed var(--ink);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-teal);
-  position: relative;
-}
-.panel::before {
-  content: '';
-  position: absolute;
-  top: -9px;
-  left: 50%;
-  width: 74px;
-  height: 18px;
-  transform: translateX(-50%) rotate(-2.5deg);
-  background: rgba(255, 217, 51, 0.8);
-  border-left: 1px dashed rgba(44, 44, 44, 0.3);
-  border-right: 1px dashed rgba(44, 44, 44, 0.3);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
 }
 .panel-title {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  padding: 10px 14px;
-  border-bottom: 2px dashed var(--ink);
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
 }
-.panel-title .h-serif { font-size: 15px; transform: rotate(-0.6deg); }
-.panel-body { padding: 14px; }
+.panel-title .h-serif { font-size: 15px; }
+.panel-body { padding: 14px 16px; }
 
-/* ---------- 控件：停格抖动 + 压纸反馈 ---------- */
+/* ---------- 按钮：无浮起无缩放，仅底色变化 ---------- */
 .btn {
-  font-family: var(--hand);
-  font-weight: 700;
-  background: var(--ink);
-  color: var(--paper);
-  border: 2px dashed var(--ink);
+  font-weight: 500;
+  background: var(--accent);
+  color: #fff;
+  border: 1px solid transparent;
   border-radius: var(--radius);
-  padding: 7px 16px;
+  padding: 6px 14px;
   font-size: 13.5px;
-  letter-spacing: 0.04em;
   white-space: nowrap;
-  box-shadow: var(--shadow-red);
-  transition: all 0.2s ease-in-out;
+  transition: background var(--t), color var(--t);
 }
-.btn:hover {
-  transform: translate(1px, 1px) rotate(-0.4deg);
-  box-shadow: 5px 5px 0px var(--teal);
-}
-.btn:active {
-  transform: translate(2px, 2px) scale(0.98);
-  box-shadow: none;
-}
-.btn:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
+.btn:hover { background: var(--accent-hover); }
+.btn:active { background: var(--accent-active); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .btn-ghost {
-  background: var(--paper);
-  color: var(--ink);
-  box-shadow: var(--shadow-yellow);
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
 }
-.btn-ghost:hover { box-shadow: 4px 4px 0px var(--red); }
+.btn-ghost:hover { background: var(--hover); }
+.btn-ghost:active { background: var(--active); }
 .btn-danger {
-  background: var(--paper);
-  color: var(--red);
-  border-color: var(--red);
-  box-shadow: 2px 2px 0px var(--teal);
+  background: transparent;
+  color: var(--danger-strong);
+  border: 1px solid rgba(235, 87, 87, 0.35);
 }
-.btn-danger:hover { box-shadow: 4px 4px 0px var(--red); }
+.btn-danger:hover { background: var(--danger-bg); }
+.btn-danger:active { background: rgba(235, 87, 87, 0.16); }
 
+/* ---------- 输入：透明底 + 下边线聚焦（Notion 文档感） ---------- */
 input[type='text'], input[type='password'], input[type='number'], textarea {
   width: 100%;
-  border: 2px dashed var(--ink);
-  border-radius: var(--radius);
-  background: var(--paper);
-  color: var(--ink);
-  padding: 8px 10px;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  color: var(--text);
+  padding: 7px 2px;
   font-family: var(--sans);
   font-size: 14px;
-  transition: all 0.2s ease-in-out;
+  transition: border-color var(--t), box-shadow var(--t);
 }
 input:focus-visible, textarea:focus-visible {
-  border-color: var(--red);
   outline: none;
-  box-shadow: 2px 2px 0px var(--yellow);
+  border-bottom-color: var(--blue);
+  box-shadow: 0 1px 0 0 var(--blue);
 }
 textarea { resize: vertical; }
+input::placeholder, textarea::placeholder { color: var(--text-3); }
 
-/* ---------- 徽记：虚线标记笔 ---------- */
+/* 下拉框保持盒状（表单选择器） */
+.scope-select {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
+  padding: 7px 10px;
+  font-family: var(--sans);
+  font-size: 14px;
+  transition: border-color var(--t), box-shadow var(--t);
+}
+.scope-select:focus-visible {
+  outline: none;
+  border-color: var(--blue);
+  box-shadow: 0 0 0 2px rgba(35, 131, 226, 0.2);
+}
+
+/* ---------- 徽记：语义色浅底小标签 ---------- */
 .badge {
   display: inline-block;
-  font-family: var(--sans);
-  font-weight: 700;
-  font-size: 11px;
+  font-weight: 500;
+  font-size: 11.5px;
   padding: 1px 8px;
-  border-radius: var(--radius);
-  border: 1.5px dashed var(--ink);
-  color: var(--ink);
-  background: var(--paper);
+  border-radius: var(--radius-sm);
+  color: var(--text-2);
+  background: var(--neutral-bg);
   white-space: nowrap;
-  transform: rotate(-1deg);
 }
-.badge-ok   { color: var(--ink); border-color: var(--teal); background: rgba(78, 205, 196, 0.25); }
-.badge-warn { color: var(--ink); border-color: var(--red);  background: rgba(255, 217, 51, 0.4); }
-.badge-bad  { color: var(--red);  border-color: var(--red);  background: rgba(255, 107, 107, 0.18); }
-.badge-run  { color: var(--ink); border-color: var(--ink);  background: rgba(78, 205, 196, 0.35); }
+.badge-ok   { color: var(--success); background: var(--success-bg); }
+.badge-warn { color: var(--warn);    background: var(--warn-bg); }
+.badge-bad  { color: var(--danger-strong); background: var(--danger-bg); }
+.badge-run  { color: var(--blue);    background: var(--blue-bg); }
 
-/* ---------- 签名：朱砂引注章（红记号笔） ---------- */
+/* ---------- 引注角标 [Sn]（蓝系内联标记，无旋转无缩放） ---------- */
 .seal {
   display: inline-block;
-  font-family: var(--hand);
-  font-weight: 700;
-  font-size: 11.5px;
+  font-weight: 600;
+  font-size: 11px;
   line-height: 1;
-  color: var(--red);
-  background: rgba(255, 217, 51, 0.35);
-  border: 2px dashed var(--red);
-  border-radius: var(--radius);
-  padding: 2px 5px 3px;
-  margin: 0 3px;
-  transform: rotate(-3deg) translateY(-1px);
+  color: var(--blue);
+  background: var(--blue-bg);
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 3px 5px;
+  margin: 0 2px;
   vertical-align: 1px;
   cursor: pointer;
-  transition: all 0.2s ease-in-out;
+  transition: background var(--t);
 }
-.seal:hover {
-  transform: rotate(1deg) translateY(-1px) scale(1.05);
-  box-shadow: 2px 2px 0px var(--teal);
-}
-.seal.is-lit {
-  background: var(--red);
-  color: var(--paper);
-  border-style: solid; /* 补笔：填充后描实 */
-  transform: rotate(0deg) scale(1.08);
-}
+.seal:hover { background: var(--blue-bg-strong); }
 
 /* 状态灯 */
 .dot {
   display: inline-block;
   width: 8px; height: 8px;
-  border-radius: 50%; /* 圆点非容器圆角，允许 */
-  border: 1.5px dashed var(--ink);
-  background: var(--paper);
+  border-radius: 50%;
+  background: var(--text-3);
 }
-.dot-ok { background: var(--teal); border-style: solid; }
-.dot-bad { background: var(--red); border-style: solid; }
+.dot-ok { background: var(--success); }
+.dot-bad { background: var(--danger); }
 
-/* 错误条：整圈虚线（非单侧粗边） */
+/* 错误条 */
 .error-note {
-  border: 2px dashed var(--red);
+  border: 1px solid rgba(235, 87, 87, 0.3);
   border-radius: var(--radius);
-  background: rgba(255, 107, 107, 0.12);
+  background: var(--danger-bg);
   padding: 8px 12px;
   font-size: 13px;
-  color: var(--ink);
+  color: var(--text);
   margin: 10px 0;
-  transform: rotate(-0.3deg);
 }
-.error-note .eyebrow { color: var(--red); font-size: 11px; }
+.error-note .eyebrow { color: var(--danger-strong); font-size: 11px; }
 
 /* 空态 */
 .empty {
-  color: var(--muted);
+  color: var(--text-3);
   font-size: 13px;
   padding: 18px 0;
   text-align: center;
 }
+
+/* ============================================================
+   管理表格公共件（原三视图各自重复定义，收敛为一份）
+   ============================================================ */
+.admin-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.admin-table th {
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  border-bottom: 1px solid var(--border);
+  padding: 6px 10px;
+}
+.admin-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--divider);
+  color: var(--text);
+}
+.admin-table tbody tr:hover td { background: var(--bg-alt); }
+.admin-table .num { text-align: center; width: 76px; }
+.admin-table .ops { text-align: right; white-space: nowrap; }
+.admin-table tr.purged { opacity: 0.5; }
+
+.table-btn {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-2);
+  font-weight: 500;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  transition: background var(--t), color var(--t);
+}
+.table-btn:hover { background: var(--hover); color: var(--text); }
+.table-btn.danger:hover { background: var(--danger-bg); color: var(--danger-strong); }
+.table-btn.armed { color: var(--danger-strong); }
+
+.chip {
+  display: inline-block;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--neutral-bg);
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 2px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--t), color var(--t);
+}
+.chip:hover { background: var(--hover); color: var(--text); }
+.chip.active { background: var(--active); color: var(--text); font-weight: 600; }
+.chip.static { cursor: default; background: var(--neutral-bg); color: var(--text); }
+.chip.static:hover { background: var(--neutral-bg); }
+
+.edit-cell { background: var(--bg-alt); }
+.edit-ops { display: flex; gap: 8px; }
+.muted { color: var(--text-3); font-size: 12px; }
+.ops { text-align: right; white-space: nowrap; }
+.mini { padding: 4px 10px; font-size: 12px; }

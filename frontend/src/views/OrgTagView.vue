@@ -169,38 +169,11 @@ function fmtTime(value) {
 </template>
 
 <style scoped>
+/* 表格/按钮公共件样式见全局 style.css */
 .tag-panel { max-width: 860px; }
-.intro { font-size: 12.5px; color: var(--muted); margin: 0 0 12px; }
-.create-row { display: flex; gap: 8px; margin-bottom: 14px; }
+.intro { font-size: 12.5px; color: var(--text-2); margin: 0 0 12px; }
+.create-row { display: flex; gap: 8px; margin-bottom: 14px; align-items: flex-end; }
 .create-row input { flex: 1; }
 
-.admin-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
-.admin-table th {
-  text-align: left;
-  font-size: 11px;
-  letter-spacing: 0.1em;
-  color: var(--muted);
-  border-bottom: 2px dashed var(--ink);
-  padding: 4px 8px;
-}
-.admin-table td { padding: 7px 8px; border-bottom: 1.5px dashed rgba(44, 44, 44, 0.25); }
-.admin-table tr:hover td { background: rgba(255, 217, 51, 0.14); }
-.admin-table .num { text-align: center; width: 76px; }
-.admin-table .muted { color: var(--muted); font-size: 12px; }
-.admin-table .ops { text-align: right; white-space: nowrap; }
-
 .edit-input { max-width: 220px; }
-.table-btn {
-  border: none;
-  background: transparent;
-  color: var(--muted);
-  font-family: var(--hand);
-  font-weight: 700;
-  font-size: 12px;
-  cursor: pointer;
-  padding: 2px 6px;
-}
-.table-btn:hover { color: var(--ink); text-decoration: underline wavy var(--teal) 1px; text-underline-offset: 3px; }
-.table-btn.danger:hover { color: var(--red); text-decoration-color: var(--red); }
-.table-btn.danger.armed { color: var(--red); }
 </style>

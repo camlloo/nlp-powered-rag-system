@@ -216,11 +216,11 @@ onUnmounted(() => askController?.abort())
   gap: 10px;
   padding: 0 2px;
 }
-.task-heading { font-size: 16px; transform: rotate(-0.4deg); max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-heading { font-size: 16px; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .chat-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 300px;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 380px);
   gap: 14px;
   height: calc(100vh - 52px - 76px);
   min-height: 420px;

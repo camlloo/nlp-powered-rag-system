@@ -63,8 +63,8 @@ function submit() {
 .fld-label {
   display: block;
   font-size: 13px;
-  font-weight: 700;
-  color: var(--ink);
+  font-weight: 600;
+  color: var(--text);
   margin-bottom: 5px;
 }
 .fld-check {
@@ -72,13 +72,12 @@ function submit() {
   align-items: center;
   gap: 8px;
   font-size: 13px;
-  color: var(--ink);
+  color: var(--text);
   cursor: pointer;
 }
-.fld-check input { accent-color: var(--red); }
+.fld-check input { accent-color: var(--blue); }
 .foot { display: flex; justify-content: flex-end; padding-top: 6px; }
 
-.user-strip { justify-content: flex-start; gap: 10px; border-top: 2px dashed var(--ink); }
+.user-strip { justify-content: flex-start; gap: 10px; border-top: 1px solid var(--border); }
 .user-info { display: flex; gap: 8px; align-items: baseline; font-size: 13px; }
-.muted { color: var(--muted); font-size: 12px; }
 </style>

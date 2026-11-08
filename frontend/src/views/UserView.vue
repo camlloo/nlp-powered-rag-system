@@ -90,7 +90,7 @@ function fmtTime(value) {
               </td>
               <td>
                 <div class="tag-chips">
-                  <span v-for="name in user.org_tags" :key="name" class="chip">{{ name }}</span>
+                  <span v-for="name in user.org_tags" :key="name" class="chip static">{{ name }}</span>
                   <span v-if="!user.org_tags.length" class="muted">—</span>
                 </div>
               </td>
@@ -133,51 +133,16 @@ function fmtTime(value) {
 </template>
 
 <style scoped>
+/* 表格/chip/按钮公共件样式见全局 style.css */
 .user-panel { max-width: 960px; }
-
-.admin-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
-.admin-table th {
-  text-align: left;
-  font-size: 11px;
-  letter-spacing: 0.1em;
-  color: var(--muted);
-  border-bottom: 2px dashed var(--ink);
-  padding: 4px 8px;
-}
-.admin-table td { padding: 7px 8px; border-bottom: 1.5px dashed rgba(44, 44, 44, 0.25); vertical-align: top; }
-.admin-table tbody tr:hover td { background: rgba(255, 217, 51, 0.14); }
-.admin-table .ops { text-align: right; white-space: nowrap; }
-.muted { color: var(--muted); font-size: 12px; }
-.user-name { font-weight: 700; margin-right: 6px; }
+.admin-table td { vertical-align: top; }
+.user-name { font-weight: 600; margin-right: 6px; }
 
 .tag-chips { display: flex; flex-wrap: wrap; gap: 4px; max-width: 320px; }
-.chip {
-  border: 1.5px dashed var(--ink);
-  border-radius: var(--radius);
-  background: rgba(78, 205, 196, 0.22);
-  font-size: 11.5px;
-  padding: 0 7px;
-  transform: rotate(-0.6deg);
-}
-.chip:nth-child(2n) { transform: rotate(0.6deg); }
+.tag-chips .chip { font-size: 11.5px; padding: 0 7px; }
 
-.edit-cell { background: var(--paper-alt); }
 .tag-picker { display: flex; flex-wrap: wrap; gap: 10px; padding: 6px 2px; }
-.pick-item { display: flex; align-items: center; gap: 5px; font-size: 13px; cursor: pointer; }
-.pick-item input { accent-color: var(--red); }
-.edit-ops { display: flex; gap: 8px; padding-bottom: 6px; }
-
-.table-btn {
-  border: none;
-  background: transparent;
-  color: var(--muted);
-  font-family: var(--hand);
-  font-weight: 700;
-  font-size: 12px;
-  cursor: pointer;
-  padding: 2px 6px;
-}
-.table-btn:hover { color: var(--ink); text-decoration: underline wavy var(--teal) 1px; text-underline-offset: 3px; }
-.table-btn.danger:hover { color: var(--red); text-decoration-color: var(--red); }
-.mini { padding: 4px 10px; font-size: 12px; }
+.pick-item { display: flex; align-items: center; gap: 5px; font-size: 13px; cursor: pointer; color: var(--text); }
+.pick-item input { accent-color: var(--blue); }
+.edit-ops { padding-bottom: 6px; }
 </style>

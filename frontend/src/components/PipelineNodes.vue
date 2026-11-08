@@ -73,16 +73,14 @@ const STATUS_TEXT = {
 
 <style scoped>
 .pipe-wrap {
-  border: 2px dashed var(--ink);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--paper);
+  background: var(--bg-alt);
   padding: 8px 12px;
-  margin-bottom: 10px;
-  transform: rotate(-0.4deg);
-  box-shadow: 2px 2px 0px var(--yellow);
+  margin-bottom: 8px;
 }
 .pipe-label-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-.pipe-file { font-size: 12.5px; font-weight: 700; color: var(--ink); }
+.pipe-file { font-size: 12.5px; font-weight: 600; color: var(--text); }
 .pipe {
   display: flex;
   align-items: center;
@@ -94,25 +92,26 @@ const STATUS_TEXT = {
   align-items: center;
   gap: 4px;
   font-size: 12px;
-  font-weight: 700;
-  color: var(--muted);
+  font-weight: 500;
+  color: var(--text-3);
 }
 .pipe-icon { font-size: 12px; }
-.pipe-node.done { color: var(--ink); }
-.pipe-node.done .pipe-icon { color: var(--teal); }
-.pipe-node.active { color: var(--ink); }
-.pipe-node.active .pipe-icon { color: var(--red); animation: pipe-jitter 0.5s steps(2) infinite; }
-.pipe-node.failed { color: var(--red); }
-.pipe-node.failed .pipe-icon { color: var(--red); }
-@keyframes pipe-jitter {
-  0% { transform: rotate(-8deg) translateY(0); }
-  50% { transform: rotate(8deg) translateY(-2px); }
-  100% { transform: rotate(-5deg); }
+.pipe-node.done { color: var(--text-2); }
+.pipe-node.done .pipe-icon { color: var(--success); }
+.pipe-node.active { color: var(--text); }
+/* 进行中：透明度慢脉冲（reduced-motion 时由全局规则关闭） */
+.pipe-node.active .pipe-icon { color: var(--blue); animation: node-pulse 1.2s ease-in-out infinite; }
+@keyframes node-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
 }
+.pipe-node.failed { color: var(--danger-strong); }
+.pipe-node.failed .pipe-icon { color: var(--danger); }
 .pipe-link {
   width: 18px;
-  border-top: 2.5px dashed rgba(44, 44, 44, 0.35);
+  height: 1px;
+  background: var(--border);
   flex-shrink: 0;
 }
-.pipe-link.filled { border-top-style: solid; border-top-color: var(--teal); }
+.pipe-link.filled { background: var(--success); }
 </style>
