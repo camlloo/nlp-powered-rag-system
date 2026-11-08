@@ -11,7 +11,6 @@ dependencies = [
   "sqlalchemy>=2.0.36,<2.1",
   "psycopg[binary]>=3.2,<4",
   "pgvector>=0.3,<0.5",
-  "alembic>=1.14,<2",
   "openai>=1.60,<3",
   "httpx>=0.28,<1",
   "numpy>=2.1,<3",

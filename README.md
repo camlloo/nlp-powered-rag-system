@@ -20,7 +20,7 @@
 | --- | --- |
 | 语言 / 运行时 | Python 3.11–3.12（推荐 3.12）；Node.js（前端） |
 | 后端框架 | FastAPI + Uvicorn |
-| 数据与向量 | PostgreSQL 16/17 + pgvector；SQLAlchemy 2、psycopg 3、Alembic |
+| 数据与向量 | PostgreSQL 16/17 + pgvector；SQLAlchemy 2、psycopg 3 |
 | 原文件对象存储 | MinIO（S3 兼容） |
 | 传统 NLP | jieba 分词、规则清洗/分句/关键词、TF-IDF / BM25 |
 | 模型接入 | 百炼 OpenAI 兼容接口（embedding `text-embedding-v4`、chat `qwen3.8-flash`） |
@@ -73,10 +73,9 @@ MINIO_SECRET_KEY=<安全渠道注入>
 MINIO_SECURE=false
 ```
 
-迁移、初始化并启动：
+初始化并启动（表结构不再由仓库内迁移工具管理，建库时需自行准备 pgvector 扩展与 schema；既有开发库直接可用）：
 
 ```bash
-uv run alembic upgrade head          # pgvector 扩展与建表由迁移安装
 uv run python -m scripts.seed        # 确保主空间存在（幂等）
 uv run uvicorn app.main:app --reload # API，http://127.0.0.1:8000，文档 /docs
 uv run python -m app.workers         # 常驻 worker（上传/重建必需，另开终端）
@@ -146,7 +145,6 @@ nlp-powered-rag-system/
 │   ├── gateways/          # 向量/问答模型适配（重试、预算、缓存）
 │   └── workers/           # 租约领取、心跳、过期恢复、清理调度
 ├── frontend/              # Vue3 + Vite 传统后台（任务/文档管理/组织标签/用户管理/系统设置）
-├── migrations/            # Alembic 迁移（0001 建表基线 … 0006 上传屏障）
 ├── resources/             # 领域词典与停用词
 ├── tests/                 # unit / integration / evaluation / fixtures / support(fake 存储)
 ├── scripts/               # seed · verify_db · backup_drill · purge_legacy_uploads
