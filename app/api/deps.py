@@ -28,7 +28,7 @@ PrincipalDep = Annotated[Principal, Depends(_current_principal)]
 
 
 def require_admin(principal: PrincipalDep) -> Principal:
-    """全局管理员校验点：管理面接口专用；静态令牌旁路天然 is_admin=True。"""
+    """全局管理员校验点，管理面接口专用。"""
     if not principal.is_admin:
         raise Forbidden("需要管理员权限")
     return principal

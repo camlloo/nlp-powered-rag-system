@@ -41,9 +41,9 @@ function renderAnswer(msg) {
 }
 
 /* 朱砂章点击（事件委托，v-html 内的元素不走 Vue 事件） */
-function onAnswerClick(event) {
+function onAnswerClick(event, message) {
   const seal = event.target.closest('.seal')
-  if (seal?.dataset.sid) emit('lit-seal', seal.dataset.sid)
+  if (seal?.dataset.sid) emit('lit-seal', seal.dataset.sid, message)
 }
 
 async function copyUser(msg, idx) {
@@ -147,7 +147,7 @@ watch(
           <div
             v-if="msg.answer && (msg.status === 'answered' || msg.streaming)"
             class="answer-md"
-            @click="onAnswerClick"
+            @click="onAnswerClick($event, msg)"
             v-html="renderAnswer(msg)"
           ></div>
 

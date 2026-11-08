@@ -17,7 +17,14 @@ from app.api.conversations import get_own_conversation
 from app.api.deps import PrincipalDep, SessionDep, require_kb_access
 from app.core.config import get_settings
 from app.core.errors import AppError, NotFound
-from app.db.models import KbDocument, KbDocumentVersion, QaCitation, QaFeedback, QaRequest
+from app.db.models import (
+    KbCollection,
+    KbDocument,
+    KbDocumentVersion,
+    QaCitation,
+    QaFeedback,
+    QaRequest,
+)
 from app.db.spaces import get_or_create_main_space
 from app.gateways.factory import get_chat_gateway, get_embedding_gateway
 from app.generation.service import QaService
@@ -157,14 +164,19 @@ def get_citation(
     if citation is None:
         raise NotFound("引用不存在")
     qa_request = session.get(QaRequest, citation.qa_request_id)
-    if qa_request is None:
+    if qa_request is None or qa_request.tenant_id != principal.tenant_id:
         raise NotFound("引用不存在")
     # 去知识库化：KB 级成员校验取消，文档级可见性检查（下方）承担授权
 
     doc_state = session.execute(
         select(KbDocument, KbDocumentVersion.version_no)
         .join(KbDocumentVersion, KbDocumentVersion.document_id == KbDocument.id)
-        .where(KbDocumentVersion.id == citation.doc_version_id)
+        .join(KbCollection, KbCollection.id == KbDocument.kb_id)
+        .where(
+            KbDocumentVersion.id == citation.doc_version_id,
+            KbCollection.tenant_id == principal.tenant_id,
+            KbCollection.deleted_at.is_(None),
+        )
     ).first()
     if doc_state is None or doc_state[0].deleted_at is not None:
         raise NotFound("文档已删除")  # 删除后旧引用不再可访问（§14.3 第 6 条）
@@ -192,7 +204,11 @@ def submit_feedback(
     payload: FeedbackRequest, session: SessionDep, principal: PrincipalDep
 ) -> FeedbackCreated:
     qa_request = session.execute(
-        select(QaRequest).where(QaRequest.request_id == payload.request_id)
+        select(QaRequest).where(
+            QaRequest.request_id == payload.request_id,
+            QaRequest.tenant_id == principal.tenant_id,
+            QaRequest.user_id == principal.user_id,
+        )
     ).scalar_one_or_none()
     if qa_request is None:
         raise NotFound("问答记录不存在")

@@ -46,7 +46,7 @@ JOB_TYPES = ("ingest_file", "reindex", "cleanup")
 
 
 class AppUser(Base):
-    """用户（RBAC）：scrypt 口令哈希，管理员旁路静态令牌。"""
+    """用户账号及管理员权限，口令使用 scrypt 哈希。"""
 
     __tablename__ = "app_user"
 
@@ -98,7 +98,10 @@ class KbCollection(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
 
-    __table_args__ = (Index("idx_kb_tenant", "tenant_id", "id"),)
+    __table_args__ = (
+        Index("idx_kb_tenant", "tenant_id", "id"),
+        UniqueConstraint("tenant_id", "name", name="uq_kb_collection_tenant_name"),
+    )
 
 
 class KbMember(Base):

@@ -89,7 +89,7 @@ async def upload_document(
         kb_id=kb_id, session=session, principal=principal, min_role="editor"
     )
     filename = file.filename or ""
-    payload = await file.read()
+    payload = await file.read(settings.max_upload_bytes + 1)
 
     check_size(len(payload), settings)  # 413
     fmt = detect_format(filename, file.content_type, payload)  # 422
@@ -245,12 +245,15 @@ def delete_document(
     reindex_job = IngestJob(
         kb_id=document.kb_id,
         job_type="reindex",
-        payload_json={"reason": "document_deleted", "document_id": document_id},
+        payload_json={
+            "reason": "document_deleted", "document_id": document_id,
+            "uploader_user_id": principal.user_id,
+        },
     )
     cleanup_job = IngestJob(
         kb_id=document.kb_id,
         job_type="cleanup",
-        payload_json={"reason": "document_deleted"},
+        payload_json={"reason": "document_deleted", "uploader_user_id": principal.user_id},
     )
     session.add_all([reindex_job, cleanup_job])
     session.commit()

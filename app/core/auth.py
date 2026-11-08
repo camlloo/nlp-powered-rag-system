@@ -1,6 +1,5 @@
 """认证与授权核心：用户口令（scrypt）、JWT 签发、访问主体。
 
-- 静态 API Token 保留为管理员旁路（脚本与旧测试兼容）；
 - 用户体系：/auth/login 签发 JWT（HS256，7 天）；
 - Principal 携带组织标签，供检索级可见性过滤使用；
 - RBAC 角色（kb_member.role）：owner > editor > viewer。
@@ -43,6 +42,18 @@ def verify_password(password: str, stored: str) -> bool:
         return False
 
 
+def _jwt_signing_key(settings: Settings) -> str:
+    from app.core.errors import ServiceUnavailable
+
+    if settings.jwt_secret and settings.jwt_secret != "dev-jwt-secret-change-me":
+        return settings.jwt_secret
+    if settings.api_token and settings.api_token != "change-me":
+        return hmac.new(
+            settings.api_token.encode("utf-8"), b"nlp-rag-jwt-v1", hashlib.sha256
+        ).hexdigest()
+    raise ServiceUnavailable("请配置 JWT_SECRET 或安全的 API_TOKEN 后使用用户登录")
+
+
 def issue_jwt(user_id: int, username: str, settings: Settings) -> str:
     import datetime as dt
 
@@ -51,12 +62,12 @@ def issue_jwt(user_id: int, username: str, settings: Settings) -> str:
         "username": username,
         "exp": dt.datetime.now(dt.UTC) + dt.timedelta(days=settings.jwt_expire_days),
     }
-    return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
+    return jwt.encode(payload, _jwt_signing_key(settings), algorithm="HS256")
 
 
 @dataclass
 class Principal:
-    """已认证访问主体：静态令牌旁路 = 预置管理员；用户体系 = JWT 解出。"""
+    """由 JWT 与数据库中的账号权限解析出的已认证主体。"""
 
     tenant_id: int
     user_id: int
@@ -66,29 +77,12 @@ class Principal:
     org_tag_names: list[str] = field(default_factory=list)
 
     def can_see_all(self) -> bool:
-        """管理员旁路：检索过滤与角色门全部放行。"""
+        """管理员可读取全部文档并管理知识库。"""
         return self.is_admin
 
 
-def get_admin_principal() -> Principal:
-    settings = get_settings()
-    return Principal(
-        tenant_id=settings.default_tenant_id,
-        user_id=settings.default_user_id,
-        username=settings.admin_username,
-        is_admin=True,
-    )
-
-
-def _extract_static_token(request) -> str | None:
-    header = request.headers.get("authorization", "")
-    if header.lower().startswith("bearer "):
-        return header[7:].strip() or None
-    return request.headers.get("x-api-token") or None
-
-
 def authenticate(request) -> Principal:
-    """请求 → Principal：JWT 优先，静态令牌旁路，均失败抛 401。"""
+    """校验 JWT，并从数据库读取账号及最新权限。"""
     import jwt as pyjwt
 
     from app.core.errors import Unauthorized
@@ -97,26 +91,22 @@ def authenticate(request) -> Principal:
 
     settings = get_settings()
 
-    static_token = _extract_static_token(request)
-    api_ok = (
-        static_token
-        and settings.api_token
-        and hmac.compare_digest(static_token, settings.api_token)
-    )
-    if api_ok:
-        return get_admin_principal()
-
     auth_header = request.headers.get("authorization", "")
     token = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else None
     if not token:
         raise Unauthorized()
 
     try:
-        payload = pyjwt.decode(token, settings.jwt_secret, algorithms=["HS256"])
-    except pyjwt.PyJWTError as exc:
+        payload = pyjwt.decode(
+            token, _jwt_signing_key(settings), algorithms=["HS256"],
+            options={"require": ["sub", "exp"]},
+        )
+        user_id = int(payload["sub"])
+        if user_id <= 0 or user_id > 2**63 - 1:
+            raise ValueError("用户 ID 无效")
+    except (pyjwt.PyJWTError, ValueError, TypeError) as exc:
         raise Unauthorized("访问令牌无效或已过期") from exc
 
-    user_id = int(payload.get("sub", "0"))
     with SessionLocal() as session:
         user = session.get(AppUser, user_id)
         if user is None:

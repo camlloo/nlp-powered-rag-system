@@ -138,7 +138,7 @@ async def execute_claimed(
             session_factory,
             job.id,
             worker_id,
-            status="failed",
+            status="queued" if job.attempt < job.max_attempt else "failed",
             error_code="revision_changed",
             error_detail=str(exc),
         )

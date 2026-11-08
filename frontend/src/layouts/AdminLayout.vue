@@ -439,7 +439,7 @@ onUnmounted(() => {
 }
 
 @media (max-width: 860px) {
-  .shell { grid-template-columns: 1fr; }
+  .shell { grid-template-columns: minmax(0, 1fr); }
   .sidebar { position: static; height: auto; }
 }
 </style>

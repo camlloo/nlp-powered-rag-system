@@ -1,6 +1,6 @@
 """认证接口：注册、登录、当前用户。
 
-POST /auth/register  创建用户并打组织标签（按名称 get-or-create）
+POST /auth/register  创建用户，组织成员身份由管理员分配
 POST /auth/login     校验口令，签发 JWT
 GET  /auth/me        当前用户与组织标签
 """
@@ -12,12 +12,11 @@ from typing import Annotated
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field, StringConstraints, field_validator
 from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 
 from app.core.auth import authenticate, hash_password, issue_jwt, verify_password
 from app.core.config import get_settings
-from app.core.errors import Conflict, NotFound, Unauthorized
+from app.core.errors import Conflict, Forbidden, NotFound, Unauthorized
 from app.db.models import AppUser, OrgTag, UserOrgTag
 from app.db.session import SessionLocal
 
@@ -56,19 +55,10 @@ class AuthResponse(BaseModel):
     user: MeResponse
 
 
-def _get_or_create_org_tags(session, names: list[str]) -> list[int]:
-    ids: list[int] = []
-    for name in names:
-        name = name.strip()
-        if not name:
-            continue
-        session.execute(insert(OrgTag).values(name=name).on_conflict_do_nothing(index_elements=["name"]))
-        ids.append(session.scalar(select(OrgTag.id).where(OrgTag.name == name)))
-    return ids
-
-
 @router.post("/auth/register", status_code=201, response_model=AuthResponse)
 def register(payload: RegisterRequest) -> AuthResponse:
+    if payload.org_tags:
+        raise Forbidden("组织成员身份须由管理员在用户管理中分配")
     settings = get_settings()
     with SessionLocal() as session:
         exists = session.scalar(select(AppUser).where(AppUser.username == payload.username))
@@ -86,11 +76,8 @@ def register(payload: RegisterRequest) -> AuthResponse:
             if exc.orig.diag.constraint_name == "uq_app_user_username":
                 raise Conflict("用户名已被注册") from exc
             raise
-        tag_ids = _get_or_create_org_tags(session, payload.org_tags)
-        for tag_id in tag_ids:
-            session.add(UserOrgTag(user_id=user.id, org_tag_id=tag_id))
-        session.commit()
         token = issue_jwt(user.id, user.username, settings)
+        session.commit()
         return AuthResponse(
             access_token=token,
             user=MeResponse(
@@ -131,15 +118,6 @@ def login(payload: LoginRequest) -> AuthResponse:
 @router.get("/auth/me", response_model=MeResponse)
 def me(request: Request) -> MeResponse:
     principal = authenticate(request)
-    if principal.is_admin:
-        # 静态令牌旁路 = 预置管理员：始终返回旁路档案，不落回同 id 的普通用户行
-        return MeResponse(
-            user_id=principal.user_id,
-            username=principal.username,
-            display_name=principal.username,
-            is_admin=True,
-            org_tags=[],
-        )
     with SessionLocal() as session:
         user = session.get(AppUser, principal.user_id)
         if user is None:

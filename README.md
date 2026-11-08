@@ -57,13 +57,13 @@ wsl docker exec -u postgres pgvector psql -c "CREATE DATABASE nlp_rag ENCODING '
 
 ```bash
 uv sync
-cp .env.example .env       # 填写 API_TOKEN、模型凭证与 MinIO 配置（不提交 .env）
+cp .env.example .env       # 填写 JWT_SECRET、模型凭证与 MinIO 配置（不提交 .env）
 ```
 
 `.env` 关键项（完整分组见 [部署与运维手册](docs/部署与运维.md)）：
 
 ```dotenv
-API_TOKEN=change-me
+JWT_SECRET=<随机生成的签名密钥>
 MODEL_BASE_URL=<百炼兼容接口地址>
 DASHSCOPE_API_KEY=<密钥>
 MINIO_ENDPOINT=127.0.0.1:9000
@@ -76,12 +76,11 @@ MINIO_SECURE=false
 初始化并启动（表结构不再由仓库内迁移工具管理，建库时需自行准备 pgvector 扩展与 schema；既有开发库直接可用）：
 
 ```bash
-uv run python -m scripts.seed        # 确保主空间存在（幂等）
 uv run uvicorn app.main:app --reload # API，http://127.0.0.1:8000，文档 /docs
 uv run python -m app.workers         # 常驻 worker（上传/重建必需，另开终端）
 ```
 
-访问 **http://127.0.0.1:8000**（生产模式下由后端同源托管前端构建产物）。健康检查：`GET /healthz`（存活）、`GET /readyz`（就绪，仅校验数据库与 pgvector，不校验 MinIO/worker）。
+主空间在首次上传或问答时按需创建。访问 **http://127.0.0.1:8000**（生产模式下由后端同源托管前端构建产物）。健康检查：`GET /healthz`（存活）、`GET /readyz`（就绪，仅校验数据库与 pgvector，不校验 MinIO/worker）。
 
 前端开发模式（可选，热更新，API 代理到 :8000）：
 
@@ -92,7 +91,9 @@ cd frontend && npm install && npm run dev   # http://127.0.0.1:5173
 ## 认证与安全
 
 - **用户体系**：`POST /auth/register`、`POST /auth/login` 签发 JWT（HS256），口令 scrypt 哈希。
-- **管理员引导**：登录页「管理员令牌」输入 `.env` 的 `API_TOKEN`（请求头 `X-API-Token` 或 `Authorization: Bearer`）进入后台，在「用户管理」将真实用户提升为 `is_admin`；系统始终保留最后一名管理员。
+- **组织成员**：注册后由管理员在「用户管理」分配组织标签，注册接口拒绝自行加入组织。
+- **JWT 密钥**：可配置独立的 `JWT_SECRET`，缺省时从非占位 `API_TOKEN` 派生。旧的公开默认密钥已停用，使用旧密钥签发的 JWT 需重新登录。
+- **管理员账号**：管理员使用账号密码登录，身份来自用户表的 `is_admin`。用户管理支持姓名/用户名、角色与组织标签条件查询，多个组织标签按任意匹配筛选。删除账号会清理成员关系与会话，保留文档及问答审计，并保护当前账号和最后一名管理员。
 - 凭证仅从服务端解析，不信任请求体；日志与错误响应不记录正文、密钥或内部路径。
 
 ## 数据组织与存储
@@ -119,13 +120,12 @@ cd frontend && npm install && npm run dev   # http://127.0.0.1:5173
 ## 测试
 
 ```bash
-uv run pytest                 # 离线单元 + 隔离数据库集成/评测；未提供隔离库时集成自动跳过
+uv run pytest                 # 内存 SQLite + mock 的离线回归
 node --test frontend/tests/api.test.js   # 前端 API 客户端测试
 ```
 
-- 集成/评测测试使用**显式随机空白隔离库**（`NLP_RAG_TEST_DATABASE_URL`）与内存 fake MinIO，绝不连接共享开发库或正式桶。
-- 当前规模：424 项测试通过（静态检查 Ruff 全绿）。
-- 评测 harness 与消融实验见 `tests/evaluation/`（指标 Recall@5 / Hit@5 / MRR@10 / 拒答率），种子评测集 26 题用于回归。
+- 当前仓库包含离线回归测试 `tests/test_review_regressions.py`，覆盖认证、文档权限、任务与索引发布。前端 API 测试见 `frontend/tests/api.test.js`。
+- 当前检出未包含历史集成测试与评测 harness。本次离线回归使用内存数据库和 mock，不连接开发数据库、MinIO 或真实模型。
 
 ## 项目结构
 

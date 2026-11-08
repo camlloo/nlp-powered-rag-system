@@ -85,7 +85,7 @@ class IndexCacheManager:
     ) -> LoadedIndex:
         """调用方先读知识库行得到 expected_*；缓存匹配直接返回，否则装载并复核。"""
         current = self._loaded.get(kb_id)
-        if current and (
+        if current and current.tenant_id == tenant_id and (
             current.index_id,
             current.data_revision,
             current.acl_revision,
@@ -103,6 +103,7 @@ class IndexCacheManager:
             kb = session.get(KbCollection, kb_id)
             if (
                 kb is None
+                or kb.deleted_at is not None
                 or kb.tenant_id != tenant_id
                 or kb.active_index_id != expected_index_id
                 or kb.data_revision != expected_data_revision
@@ -132,10 +133,13 @@ class IndexCacheManager:
     ) -> LoadedIndex:
         with session_factory() as session:
             kb = session.get(KbCollection, kb_id)
-            if kb is None or kb.tenant_id != tenant_id:
+            if kb is None or kb.deleted_at is not None or kb.tenant_id != tenant_id:
                 raise Conflict("知识库不存在或不属于当前租户")
             rows = session.execute(
-                select(KbChunk, KbEmbedding.embedding)
+                select(
+                    KbChunk, KbEmbedding.embedding, KbDocument.uploader_user_id,
+                    KbDocument.visibility, KbDocument.org_tag_id,
+                )
                 .join(KbEmbedding, KbEmbedding.chunk_id == KbChunk.id)
                 .join(KbIndex, (KbIndex.id == KbChunk.index_id) & (KbIndex.kb_id == KbChunk.kb_id))
                 .join(
@@ -161,7 +165,7 @@ class IndexCacheManager:
             acl_revision=kb.acl_revision,
         )
         embeddings: list[np.ndarray] = []
-        for chunk, embedding in rows:
+        for chunk, embedding, uploader_user_id, visibility, org_tag_id in rows:
             index.chunk_ids.append(chunk.id)
             index.records[chunk.id] = ChunkRecord(
                 chunk_id=chunk.id,
@@ -172,9 +176,9 @@ class IndexCacheManager:
                 tokens=list(chunk.tokens),
                 keywords=list(chunk.keywords),
                 source_locator=dict(chunk.source_locator),
-                uploader_user_id=chunk.uploader_user_id,
-                visibility=chunk.visibility,
-                org_tag_id=chunk.org_tag_id,
+                uploader_user_id=uploader_user_id,
+                visibility=visibility,
+                org_tag_id=org_tag_id,
             )
             embeddings.append(np.asarray(embedding, dtype=np.float32))
         if embeddings:

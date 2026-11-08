@@ -98,7 +98,7 @@ class QaService:
 
         with self._sessions() as session:
             kb = session.get(KbCollection, kb_id)
-            if kb is None or kb.deleted_at is not None:
+            if kb is None or kb.deleted_at is not None or kb.tenant_id != tenant_id:
                 raise NotFound("知识库不存在")
             ask_time_state = (kb.active_index_id, kb.data_revision, kb.acl_revision)
 
@@ -232,7 +232,7 @@ class QaService:
 
         with self._sessions() as session:
             kb = session.get(KbCollection, kb_id)
-            if kb is None or kb.deleted_at is not None:
+            if kb is None or kb.deleted_at is not None or kb.tenant_id != tenant_id:
                 raise NotFound("知识库不存在")
             expected_state = (kb.active_index_id, kb.data_revision, kb.acl_revision)
 
@@ -250,18 +250,18 @@ class QaService:
 
         if result.status in ("clarification_required", "insufficient_evidence"):
             answer = None if result.status == "clarification_required" else INSUFFICIENT_ANSWER
-            self._write_audit(
+            self._finish(
                 request_id=request_id,
+                result=result,
+                expected_state=expected_state,
+                started=started,
                 tenant_id=tenant_id,
                 user_id=user_id,
                 kb_id=kb_id,
-                index_id=result.index_id,
                 question=question,
                 status=result.status,
-                retrieval_mode=result.mode,
                 answer=answer,
                 error_code=None,
-                latency_ms=int((time.monotonic() - started) * 1000),
                 top_k=top_k,
                 usage=usage,
                 citations=[],
@@ -374,18 +374,18 @@ class QaService:
                 },
             }
 
-        self._write_audit(
+        self._finish(
             request_id=request_id,
+            result=result,
+            expected_state=expected_state,
+            started=started,
             tenant_id=tenant_id,
             user_id=user_id,
             kb_id=kb_id,
-            index_id=result.index_id,
             question=question,
             status=status,
-            retrieval_mode=result.mode,
             answer=answer or None,
             error_code=validation.error_code,
-            latency_ms=int((time.monotonic() - started) * 1000),
             top_k=top_k,
             usage=TokenUsage(prompt_tokens=0, total_tokens=len(answer)),
             citations=citations,

@@ -1,5 +1,5 @@
 <script setup>
-import { onUnmounted, ref, watch } from 'vue'
+import { nextTick, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { askStream, api } from '../api.js'
 import AskPanel from '../components/AskPanel.vue'
@@ -49,27 +49,41 @@ function toMessage(m) {
 
 async function openConversation(id) {
   resetConversation()
+  const controller = new AbortController()
+  askController = controller
+  busy.value = true
   conversationId.value = id
   try {
-    const detail = await api.getConversation(id)
+    const detail = await api.getConversation(id, controller.signal)
+    if (askController !== controller) return
     convTitle.value = detail.title
     messages.value = detail.messages.map(toMessage)
     const last = [...messages.value].reverse().find((m) => m.role === 'assistant')
     if (last) citations.value = last.citations
   } catch (err) {
+    if (controller.signal.aborted) return
     if (err.status === 404) {
       resetConversation()
       router.replace({ path: '/console' })
     }
     handleError(err)
+  } finally {
+    if (askController === controller) {
+      askController = null
+      busy.value = false
+    }
   }
 }
 
 /* query.id 变化（侧栏点击/首问写入）或「新建任务」信号 → 加载/重置 */
 watch(
   () => [route.query.id, store.taskNonce],
-  () => {
-    const id = Number(route.query.id)
+  ([queryId, taskNonce], previous = []) => {
+    if (previous.length && taskNonce !== previous[1]) {
+      resetConversation()
+      return
+    }
+    const id = Number(queryId)
     if (id && id !== conversationId.value) openConversation(id)
     else if (!id && route.path === '/console' && (conversationId.value || messages.value.length)) resetConversation()
   },
@@ -78,46 +92,45 @@ watch(
 
 async function onAsk(question) {
   if (busy.value) return
+  busy.value = true
   askError.value = null
+  const controller = new AbortController()
+  askController = controller
 
-  // 新任务首问：先建会话（标题=首个问题），URL 补 id（query 变化不重挂载）
-  if (!conversationId.value) {
-    try {
-      const conv = await api.createConversation(question.slice(0, 120))
+  try {
+    // 新任务首问：先建会话（标题=首个问题），URL 补 id（query 变化不重挂载）
+    if (!conversationId.value) {
+      const conv = await api.createConversation(question.slice(0, 120), controller.signal)
+      if (controller.signal.aborted) return
       conversationId.value = conv.conversation_id
       convTitle.value = conv.title
       await router.replace({ path: '/console', query: { id: conv.conversation_id } })
+      if (controller.signal.aborted) return
       await refreshConversations().catch(handleError)
-    } catch (err) {
-      handleError(err)
-      return
     }
-  }
+    if (controller.signal.aborted) return
 
-  const controller = new AbortController()
-  askController = controller
-  const rounds = Number(store.settings.historyRounds) || 0
-  const history = rounds > 0
-    ? messages.value
-      .filter((m) => m.role === 'user' || (m.status === 'answered' && m.plainAnswer))
-      .slice(-rounds * 2)
-      .map((m) => ({ role: m.role, content: (m.role === 'user' ? m.content : m.plainAnswer).slice(0, 2000) }))
-    : []
-  messages.value.push({ role: 'user', content: question })
-  messages.value.push({
-    role: 'assistant',
-    streaming: true,
-    status: 'answering',
-    answer: '',
-    plainAnswer: '',
-    citations: [],
-    requestId: '',
-    mode: '',
-    error: null,
-  })
-  const assistant = messages.value[messages.value.length - 1]
+    const rounds = Number(store.settings.historyRounds) || 0
+    const history = rounds > 0
+      ? messages.value
+        .filter((m) => m.role === 'user' || (m.status === 'answered' && m.plainAnswer))
+        .slice(-rounds * 2)
+        .map((m) => ({ role: m.role, content: (m.role === 'user' ? m.content : m.plainAnswer).slice(0, 2000) }))
+      : []
+    messages.value.push({ role: 'user', content: question })
+    messages.value.push({
+      role: 'assistant',
+      streaming: true,
+      status: 'answering',
+      answer: '',
+      plainAnswer: '',
+      citations: [],
+      requestId: '',
+      mode: '',
+      error: null,
+    })
+    const assistant = messages.value[messages.value.length - 1]
 
-  try {
     await askStream(
       {
         question,
@@ -152,9 +165,12 @@ async function onAsk(question) {
     if (askController === controller) citations.value = assistant.citations
   } catch (err) {
     if (controller.signal.aborted) return
-    assistant.streaming = false
-    assistant.status = 'error'
-    assistant.error = err.message
+    const assistant = messages.value[messages.value.length - 1]
+    if (assistant?.role === 'assistant') {
+      assistant.streaming = false
+      assistant.status = 'error'
+      assistant.error = err.message
+    }
     if (err.status === 401) {
       logout()
     } else {
@@ -176,8 +192,10 @@ async function onFeedback(requestId, rating) {
 
 /* 朱砂章 → 引用卷宗定位 */
 const stackRef = ref(null)
-function onLitSeal(sourceId) {
+async function onLitSeal(sourceId, message) {
+  citations.value = message.citations || []
   const citation = citations.value.find((c) => c.source_id === sourceId)
+  await nextTick()
   if (citation) stackRef.value?.locate(citation)
 }
 

@@ -1,28 +1,21 @@
-/* API 客户端：同源 /api/v1，JWT 用户认证 + 管理员旁路静态令牌。
+/* API 客户端：同源 /api/v1，JWT 用户认证。
    去知识库化：文档直接归属「个人 / 组织」，问答面向全部可见文档。 */
 
 const BASE = '/api/v1'
-const TOKEN_KEY = 'rag.token'
 const JWT_KEY = 'rag.jwt'
 
-export function getToken() {
-  return localStorage.getItem(JWT_KEY) || localStorage.getItem(TOKEN_KEY) || ''
-}
 export function getJwt() {
   return localStorage.getItem(JWT_KEY) || ''
 }
 export function setJwt(token) {
   localStorage.setItem(JWT_KEY, token)
 }
-export function setToken(token) {
-  localStorage.setItem(TOKEN_KEY, token.trim())
-}
 export function hasToken() {
-  return Boolean(getToken())
+  return Boolean(getJwt())
 }
 export function clearTokens() {
   localStorage.removeItem(JWT_KEY)
-  localStorage.removeItem(TOKEN_KEY)
+  localStorage.removeItem('rag.token')
 }
 
 export class ApiError extends Error {
@@ -39,7 +32,6 @@ async function request(path, { method = 'GET', body, form, authenticated = true,
   const headers = {}
   const jwt = getJwt()
   if (authenticated && jwt) headers['Authorization'] = `Bearer ${jwt}`
-  else if (authenticated && getToken()) headers['X-API-Token'] = getToken()
   if (!form) headers['Content-Type'] = 'application/json'
   let resp
   try {
@@ -108,8 +100,9 @@ export const api = {
   // 任务/会话（历史对话）
   listConversations: (limit = 20, offset = 0) =>
     request(`/conversations?limit=${limit}&offset=${offset}`),
-  createConversation: (title) => request('/conversations', { method: 'POST', body: { title } }),
-  getConversation: (conversationId) => request(`/conversations/${conversationId}`),
+  createConversation: (title, signal) =>
+    request('/conversations', { method: 'POST', body: { title }, signal }),
+  getConversation: (conversationId, signal) => request(`/conversations/${conversationId}`, { signal }),
   deleteConversation: (conversationId) =>
     request(`/conversations/${conversationId}`, { method: 'DELETE' }),
 
@@ -124,7 +117,16 @@ export const api = {
   renameOrgTag: (tagId, name) =>
     request(`/admin/org-tags/${tagId}`, { method: 'PATCH', body: { name } }),
   deleteOrgTag: (tagId) => request(`/admin/org-tags/${tagId}`, { method: 'DELETE' }),
-  listUsers: (limit = 200, offset = 0) => request(`/admin/users?limit=${limit}&offset=${offset}`),
+  listUsers: (limit = 200, offset = 0, filters = {}, signal) => {
+    const query = new URLSearchParams({ limit, offset })
+    if (filters.keyword) query.set('keyword', filters.keyword)
+    if (filters.isAdmin !== null && filters.isAdmin !== undefined) {
+      query.set('is_admin', String(filters.isAdmin))
+    }
+    for (const tagId of filters.orgTagIds || []) query.append('org_tag_ids', tagId)
+    return request(`/admin/users?${query}`, { signal })
+  },
+  deleteUser: (userId) => request(`/admin/users/${userId}`, { method: 'DELETE' }),
   updateUserAdmin: (userId, isAdmin) =>
     request(`/admin/users/${userId}`, { method: 'PATCH', body: { is_admin: isAdmin } }),
   updateUserTags: (userId, tagIds) =>

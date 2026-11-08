@@ -378,7 +378,7 @@ async def upload_document(
     if visibility not in ("private", "public"):
         raise ValidationFailed("visibility 仅支持 private / public")
     filename = file.filename or ""
-    payload = await file.read()
+    payload = await file.read(settings.max_upload_bytes + 1)
     check_size(len(payload), settings)  # 413
     fmt = detect_format(filename, file.content_type, payload)  # 422
     org_tag_id = _resolve_org_scope(session, principal, scope)
@@ -421,7 +421,14 @@ def list_documents(
     offset: int = Query(default=0, ge=0),
 ) -> GlobalDocumentListResponse:
     """全局文档清单：仅返回当前用户可见的文档（归属/可见性随行返回）。"""
-    filters = []
+    filters = [
+        KbDocument.kb_id.in_(
+            select(KbCollection.id).where(
+                KbCollection.tenant_id == principal.tenant_id,
+                KbCollection.deleted_at.is_(None),
+            )
+        )
+    ]
     if not include_deleted:
         filters.append(KbDocument.deleted_at.is_(None))
     filters.extend(_visibility_filters(principal))

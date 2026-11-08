@@ -2,7 +2,8 @@
 
 - GET/POST /admin/org-tags            标签清单（含使用计数）/ 创建
 - PATCH/DELETE /admin/org-tags/{id}   重命名 / 删除（剥离文档与块引用，递增 acl_revision）
-- GET  /admin/users                   用户分页清单
+- GET  /admin/users                   条件查询与分页清单
+- DELETE /admin/users/{id}            删除账号与成员关系，保留文档与审计
 - PATCH /admin/users/{id}             授予/撤销管理员（保留最后一名）
 - PUT  /admin/users/{id}/org-tags     整体替换用户标签集合
 
@@ -14,12 +15,22 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Query
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import AdminDep, SessionDep
 from app.core.errors import Conflict, NotFound
-from app.db.models import AppUser, IngestJob, KbChunk, KbCollection, KbDocument, OrgTag, UserOrgTag
+from app.db.models import (
+    AppUser,
+    Conversation,
+    IngestJob,
+    KbChunk,
+    KbCollection,
+    KbDocument,
+    KbMember,
+    OrgTag,
+    UserOrgTag,
+)
 from app.db.spaces import get_or_create_main_space
 from app.schemas.admin import (
     AdminUserItem,
@@ -190,7 +201,9 @@ def _user_item(session, user: AppUser) -> AdminUserItem:
 
 
 def _require_user(session, user_id: int) -> AppUser:
-    user = session.get(AppUser, user_id)
+    user = session.scalar(
+        select(AppUser).where(AppUser.id == user_id).with_for_update()
+    )
     if user is None:
         raise NotFound("用户不存在")
     return user
@@ -202,32 +215,69 @@ def list_users(
     _: AdminDep,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    keyword: str = Query(default="", max_length=100),
+    is_admin: bool | None = None,
+    org_tag_ids: list[int] | None = Query(default=None),
 ) -> UserListResponse:
-    total = session.scalar(select(func.count()).select_from(AppUser))
-    rows = session.scalars(select(AppUser).order_by(AppUser.id).offset(offset).limit(limit)).all()
+    filters = []
+    if keyword := keyword.strip():
+        filters.append(or_(
+            AppUser.username.icontains(keyword, autoescape=True),
+            AppUser.display_name.icontains(keyword, autoescape=True),
+        ))
+    if is_admin is not None:
+        filters.append(AppUser.is_admin == is_admin)
+    if org_tag_ids:
+        # 子查询避免多标签用户重复出现，IN 表达任意一个标签匹配即可。
+        filters.append(AppUser.id.in_(
+            select(UserOrgTag.user_id).where(UserOrgTag.org_tag_id.in_(set(org_tag_ids)))
+        ))
+    total = session.scalar(select(func.count()).select_from(AppUser).where(*filters))
+    rows = session.scalars(
+        select(AppUser).where(*filters).order_by(AppUser.id).offset(offset).limit(limit)
+    ).all()
     return UserListResponse(
         total=total,
         items=[_user_item(session, user) for user in rows],
     )
 
 
+def _lock_admin_ids(session) -> list[int]:
+    """删除与变更管理员权限共用锁序，串行复核最后管理员保护。"""
+    return list(session.scalars(
+        select(AppUser.id).where(AppUser.is_admin.is_(True))
+        .order_by(AppUser.id).with_for_update()
+    ))
+
+
 @router.patch("/users/{user_id}", response_model=AdminUserItem)
 def update_user_admin(
     user_id: int, payload: UserAdminPatchRequest, session: SessionDep, _: AdminDep
 ) -> AdminUserItem:
+    admin_ids = _lock_admin_ids(session)
     user = _require_user(session, user_id)
     if user.is_admin and not payload.is_admin:
-        remaining = session.scalar(
-            select(func.count())
-            .select_from(AppUser)
-            .where(AppUser.is_admin.is_(True), AppUser.id != user.id)
-        )
-        if not remaining:
+        if len(admin_ids) <= 1:
             raise Conflict("至少保留一名管理员")
     user.is_admin = payload.is_admin
     session.commit()
     session.refresh(user)
     return _user_item(session, user)
+
+
+@router.delete("/users/{user_id}", status_code=204)
+def delete_user(user_id: int, session: SessionDep, principal: AdminDep) -> None:
+    admin_ids = _lock_admin_ids(session)
+    user = _require_user(session, user_id)
+    if user.is_admin and len(admin_ids) <= 1:
+        raise Conflict("至少保留一名管理员")
+    if user.id == principal.user_id:
+        raise Conflict("不能删除当前登录账号")
+    session.execute(delete(UserOrgTag).where(UserOrgTag.user_id == user.id))
+    session.execute(delete(KbMember).where(KbMember.user_id == user.id))
+    session.execute(delete(Conversation).where(Conversation.user_id == user.id))
+    session.delete(user)
+    session.commit()
 
 
 @router.put("/users/{user_id}/org-tags", response_model=AdminUserItem)

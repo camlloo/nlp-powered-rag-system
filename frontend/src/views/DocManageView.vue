@@ -192,7 +192,7 @@ const STATUS_TEXT = {
                     编辑
                   </button>
                   <button
-                    v-if="!doc.deleted_at"
+                    v-if="!doc.deleted_at && canEdit(doc)"
                     type="button"
                     class="table-btn danger"
                     title="删除文档"
@@ -300,6 +300,7 @@ const STATUS_TEXT = {
 .reindex-strip { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 12px; }
 
 .tracked { margin-bottom: 10px; }
+.list-panel .panel-body { overflow-x: auto; }
 .filter-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
 .doc-title {
   max-width: 340px;
@@ -321,6 +322,6 @@ const STATUS_TEXT = {
 .edit-hint { margin: 2px 2px 4px; }
 
 @media (max-width: 860px) {
-  .doc-layout { grid-template-columns: 1fr; }
+  .doc-layout { grid-template-columns: minmax(0, 1fr); }
 }
 </style>

@@ -103,7 +103,7 @@ class RetrievalService:
 
         with session_factory() as session:
             kb = session.get(KbCollection, kb_id)
-            if kb is None or kb.deleted_at is not None:
+            if kb is None or kb.deleted_at is not None or kb.tenant_id != tenant_id:
                 raise NotFound("知识库不存在")
             if kb.active_index_id is None:
                 gate = evaluate_gate(

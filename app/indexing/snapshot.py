@@ -188,12 +188,14 @@ class IndexBuilder:
         with self._sessions() as session:
             kb = session.get(KbCollection, kb_id)
             source_revision = kb.data_revision
+            source_acl_revision = kb.acl_revision
             manifest_rows = session.execute(
                 select(KbDocumentVersion, KbDocument)
                 .join(KbDocument, KbDocument.id == KbDocumentVersion.document_id)
                 .where(
                     KbDocumentVersion.kb_id == kb_id,
                     KbDocument.deleted_at.is_(None),
+                    KbDocumentVersion.version_no == KbDocument.current_version_no,
                     KbDocumentVersion.parse_status == PARSE_SUCCEEDED,
                 )
                 .order_by(KbDocumentVersion.id)
@@ -213,7 +215,9 @@ class IndexBuilder:
             for version, document in manifest_rows
         ]
 
-        index_id = self._create_index_row(kb_id, source_revision, units, tenant_id)
+        index_id = self._create_index_row(
+            kb_id, source_revision, units, tenant_id, source_acl_revision
+        )
 
         # stage: chunk —— 逐文件跑传统 NLP 流水线（确定性，可重复）
         if lease:
@@ -266,7 +270,7 @@ class IndexBuilder:
         if lease:
             lease.set_stage(STAGE_PUBLISH)
             lease.renew()
-        self._publish(kb_id, index_id, source_revision)
+        self._publish(kb_id, index_id, source_revision, source_acl_revision)
         logger.info(
             "snapshot published: kb=%s index=%s files=%s chunks=%s cache_hits=%s",
             kb_id,
@@ -366,14 +370,19 @@ class IndexBuilder:
             session.commit()
 
     def _create_index_row(
-        self, kb_id: int, source_revision: int, units: list[_FileUnit], tenant_id: int
+        self, kb_id: int, source_revision: int, units: list[_FileUnit], tenant_id: int,
+        source_acl_revision: int,
     ) -> int:
         with self._sessions() as session:
             # 先锁住知识库并校验修订号，防止旧清单在新构建开始后替代新快照。
             kb = session.execute(
                 select(KbCollection).where(KbCollection.id == kb_id).with_for_update()
             ).scalar_one()
-            if kb.deleted_at is not None or kb.data_revision != source_revision:
+            if (
+                kb.deleted_at is not None
+                or kb.data_revision != source_revision
+                or kb.acl_revision != source_acl_revision
+            ):
                 raise RevisionChanged(f"kb={kb_id} 构建清单已失效")
             # 放弃同知识库遗留的 building 快照；building 不参与检索。
             session.execute(
@@ -514,12 +523,18 @@ class IndexBuilder:
             index.manifest_json = manifest
             session.commit()
 
-    def _publish(self, kb_id: int, index_id: int, source_revision: int) -> None:
+    def _publish(
+        self, kb_id: int, index_id: int, source_revision: int, source_acl_revision: int
+    ) -> None:
         with self._sessions() as session:
             kb = session.execute(
                 select(KbCollection).where(KbCollection.id == kb_id).with_for_update()
             ).scalar_one()
-            if kb.deleted_at is not None or kb.data_revision != source_revision:
+            if (
+                kb.deleted_at is not None
+                or kb.data_revision != source_revision
+                or kb.acl_revision != source_acl_revision
+            ):
                 session.execute(
                     update(KbIndex)
                     .where(

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { afterEach, test } from 'node:test'
-import { api, ApiError, askStream, setJwt, setToken } from '../src/api.js'
+import { api, ApiError, askStream, hasToken, setJwt } from '../src/api.js'
 
 const storage = new Map()
 globalThis.localStorage = {
@@ -12,6 +12,19 @@ const originalFetch = globalThis.fetch
 afterEach(() => {
   storage.clear()
   globalThis.fetch = originalFetch
+})
+
+test('conversation requests forward cancellation signals', async () => {
+  const controller = new AbortController()
+  const requests = []
+  globalThis.fetch = async (url, options) => {
+    assert.equal(options.signal, controller.signal)
+    requests.push(url)
+    return Response.json({})
+  }
+  await api.createConversation('测试', controller.signal)
+  await api.getConversation(1, controller.signal)
+  assert.deepEqual(requests, ['/api/v1/conversations', '/api/v1/conversations/1'])
 })
 
 test('streaming uses the same JWT authorization as ordinary requests', async () => {
@@ -27,13 +40,42 @@ test('streaming uses the same JWT authorization as ordinary requests', async () 
   assert.equal(result.status, 'answered')
 })
 
-test('streaming keeps static token authentication available', async () => {
-  setToken(' static-token ')
+test('legacy static tokens cannot authenticate requests', async () => {
+  storage.set('rag.token', 'static-token')
+  assert.equal(hasToken(), false)
   globalThis.fetch = async (url, options) => {
-    assert.equal(options.headers['X-API-Token'], 'static-token')
+    assert.equal(options.headers['X-API-Token'], undefined)
+    assert.equal(options.headers.Authorization, undefined)
     return new Response('event: done\ndata: {}\n\n')
   }
   await askStream({ kb_id: 1, question: '问题' })
+})
+
+test('user filters encode OR tag ids, keywords, roles and pagination', async () => {
+  const controller = new AbortController()
+  globalThis.fetch = async (url, options) => {
+    const parsed = new URL(url, 'http://localhost')
+    assert.equal(parsed.pathname, '/api/v1/admin/users')
+    assert.equal(parsed.searchParams.get('keyword'), '研发 & 张')
+    assert.equal(parsed.searchParams.get('is_admin'), 'false')
+    assert.equal(parsed.searchParams.get('limit'), '20')
+    assert.equal(parsed.searchParams.get('offset'), '20')
+    assert.deepEqual(parsed.searchParams.getAll('org_tag_ids'), ['1', '2'])
+    assert.equal(options.signal, controller.signal)
+    return Response.json({ total: 0, items: [] })
+  }
+  await api.listUsers(20, 20, {
+    keyword: '研发 & 张', isAdmin: false, orgTagIds: [1, 2],
+  }, controller.signal)
+})
+
+test('user deletion uses DELETE and accepts the empty response', async () => {
+  globalThis.fetch = async (url, options) => {
+    assert.equal(url, '/api/v1/admin/users/3')
+    assert.equal(options.method, 'DELETE')
+    return new Response(null, { status: 204 })
+  }
+  assert.equal(await api.deleteUser(3), null)
 })
 
 test('login and registration send credentials without stale authorization', async () => {
