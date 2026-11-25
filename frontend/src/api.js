@@ -108,6 +108,10 @@ export const api = {
 
   ask: (payload) => request('/qa', { method: 'POST', body: payload }),
   debug: (payload) => request('/retrieval/debug', { method: 'POST', body: payload }),
+
+  // 模型评测（管理员）：只读聚合 tests/eval_medical.py 产物文件
+  evalOverview: () => request('/eval/overview'),
+  evalDetails: (track) => request(`/eval/details/${track}`),
   feedback: (requestId, rating, reason) =>
     request('/feedback', { method: 'POST', body: { request_id: requestId, rating, reason } }),
 

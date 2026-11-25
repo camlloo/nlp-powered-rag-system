@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   checkReady,
@@ -20,11 +20,22 @@ const pageTitle = computed(() => route.meta.title || '')
 
 const NAV = [
   { to: '/docs', label: '文档管理' },
+  { to: '/eval', label: '模型评测', admin: true },
   { to: '/org-tags', label: '组织标签', admin: true },
   { to: '/users', label: '用户管理', admin: true },
   { to: '/settings', label: '系统设置' },
   { to: '/console', label: '任务' },
 ]
+
+/* 提示条自动消失：普通提示 6s，失败类 12s；也可点击手动关闭 */
+let noticeTimer = 0
+watch(() => store.notice, (text) => {
+  clearTimeout(noticeTimer)
+  if (!text) return
+  const ms = text.includes('失败') ? 12000 : 6000
+  noticeTimer = setTimeout(() => { store.notice = '' }, ms)
+})
+onUnmounted(() => clearTimeout(noticeTimer))
 
 const activeConversationId = computed(() => Number(route.query.id) || null)
 const showSearch = ref(false)
@@ -189,7 +200,13 @@ onUnmounted(() => {
       </header>
 
       <main class="admin-main">
-        <div v-if="store.notice" class="notice" role="status">{{ store.notice }}</div>
+        <div
+          v-if="store.notice"
+          class="notice"
+          role="status"
+          title="点击关闭"
+          @click="store.notice = ''"
+        >{{ store.notice }}</div>
         <RouterView />
       </main>
     </div>
@@ -436,6 +453,7 @@ onUnmounted(() => {
   padding: 7px 12px;
   margin-bottom: 10px;
   border-radius: var(--radius);
+  cursor: pointer;   /* 点击即关闭 */
 }
 
 @media (max-width: 860px) {

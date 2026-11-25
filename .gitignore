@@ -23,3 +23,15 @@ frontend/dist/
 
 # ZCode 会话计划元数据（工具目录，非项目源码）
 .zcode/
+
+# 医疗评测原始数据集：走 hf-mirror 下载（获取命令见 tests/data/medical/README.md），不入库
+data/medical/
+
+# 评测集构建产物与评测结果：由 tests/build_medical_evalset.py / eval_medical.py 再生
+tests/data/medical/qa_open_*.jsonl
+tests/data/medical/mcq_zh.jsonl
+tests/data/medical/manifest.json
+tests/data/medical/retrieval/
+tests/data/medical/kb/
+tests/data/medical/results/
+tests/data/medical/.kb_state.json

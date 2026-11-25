@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.api import admin, auth, conversations, documents, health, jobs, kbs, qa, retrieval
+from app.api import admin, auth, conversations, documents, eval as eval_api, health, jobs, kbs, qa, retrieval
 from app.api.deps import SettingsDep
 from app.core.config import get_settings
 from app.core.errors import register_exception_handlers
@@ -67,6 +67,7 @@ def create_app() -> FastAPI:
     app.include_router(jobs.router, prefix=settings.api_prefix)
     app.include_router(retrieval.router, prefix=settings.api_prefix)
     app.include_router(qa.router, prefix=settings.api_prefix)
+    app.include_router(eval_api.router, prefix=settings.api_prefix)
 
     if FRONTEND_DIST.is_dir():
         # 前端构建产物同源托管：API 路由优先，剩余路径进 SPA

@@ -13,7 +13,9 @@ from app.nlp import chunker, cleaning, dedup, keywords, tokenizer
 from app.schemas.contracts import ChunkDraft, ParsedDocument, PipelineResult
 
 # 规则版本：清洗/分句/分词/切块任一规则语义变更时递增
-RULES_VERSION = "2"
+# v3：词项通道 tokens 拼入标题路径词（重复一次，tf≥2），修复"名称仅出现在
+# 标题、正文不含"类查询的 BM25 标题盲区（向量通道此前已含标题）。
+RULES_VERSION = "3"
 
 
 def pipeline_version(settings: Settings) -> str:
@@ -65,12 +67,16 @@ def run_pipeline(parsed: ParsedDocument, settings: Settings | None = None) -> Pi
     drafts: list[ChunkDraft] = []
     for piece in pieces:
         search_text = cleaning.normalize_search_text(cleaning.clean_display_text(piece.content))
+        # 标题路径词进入词项统计：重复一次获得 tf≥2 加权，与向量通道口径对齐
+        title_terms = tokenizer.content_terms(
+            cleaning.normalize_search_text(" > ".join(piece.title_path))
+        )
         drafts.append(
             ChunkDraft(
                 content=piece.content,
                 search_text=search_text,
                 embedding_input="",
-                tokens=tokenizer.content_terms(search_text),
+                tokens=title_terms + title_terms + tokenizer.content_terms(search_text),
                 keywords=[],
                 title_path=piece.title_path,
                 source_locator=_locator(parsed.fmt, piece.locators),

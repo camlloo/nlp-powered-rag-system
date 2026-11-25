@@ -24,10 +24,19 @@ onMounted(async () => {
   }
 })
 
+const uploaderQ = ref('')
+
 const filteredDocs = computed(() => {
-  if (filter.value === 'all') return docs.value
-  if (filter.value === 'personal') return docs.value.filter((d) => !d.org_tag_name)
-  return docs.value.filter((d) => d.org_tag_name === filter.value)
+  let rows = docs.value
+  if (filter.value === 'personal') {
+    // 「我的」= 当前账号上传的文档（不再按“无组织归属”粗筛）
+    rows = rows.filter((d) => d.uploader_user_id === store.currentUser?.user_id)
+  } else if (filter.value !== 'all') {
+    rows = rows.filter((d) => d.org_tag_name === filter.value)
+  }
+  const q = uploaderQ.value.trim().toLowerCase()
+  if (q) rows = rows.filter((d) => (d.uploader_username || '').toLowerCase().includes(q))
+  return rows
 })
 
 const fileInput = ref(null)
@@ -144,7 +153,7 @@ const STATUS_TEXT = {
             class="chip"
             :class="{ active: filter === 'personal' }"
             @click="filter = 'personal'"
-          >个人</button>
+          >我的</button>
           <button
             v-for="name in myOrgNames"
             :key="name"
@@ -152,6 +161,13 @@ const STATUS_TEXT = {
             :class="{ active: filter === name }"
             @click="filter = name"
           >{{ name }}</button>
+          <input
+            v-model="uploaderQ"
+            class="uploader-search"
+            type="search"
+            placeholder="按用户名筛选"
+            title="按上传者用户名过滤（如 med_eval）"
+          />
         </div>
         <table class="admin-table">
           <thead>
@@ -169,7 +185,9 @@ const STATUS_TEXT = {
                 <td class="doc-title" :title="doc.title">{{ doc.title }}</td>
                 <td>
                   <span v-if="doc.org_tag_name" class="chip static">{{ doc.org_tag_name }}</span>
-                  <span v-else class="muted">个人</span>
+                  <span v-else class="owner-user muted">
+                    @{{ doc.uploader_username || '未知' }}<template v-if="doc.uploader_user_id === store.currentUser?.user_id"> · 你</template>
+                  </span>
                 </td>
                 <td>
                   <span class="badge" :class="doc.visibility === 'public' ? 'badge-warn' : ''">
@@ -301,7 +319,20 @@ const STATUS_TEXT = {
 
 .tracked { margin-bottom: 10px; }
 .list-panel .panel-body { overflow-x: auto; }
-.filter-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.filter-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; align-items: center; }
+.uploader-search {
+  width: 150px;
+  padding: 4px 9px;
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  transition: background 150ms ease;
+}
+.uploader-search:hover { background: var(--hover); }
+.uploader-search:focus { outline: none; background: var(--bg); border-color: var(--blue); }
+.uploader-search::placeholder { color: var(--text-3); }
 .doc-title {
   max-width: 340px;
   overflow: hidden;

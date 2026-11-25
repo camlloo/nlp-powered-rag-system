@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     port: int = 8000
     log_level: str = "INFO"
 
+    # 评测结果目录（tests/eval_medical.py 产物，管理端可视化只读聚合）
+    eval_results_dir: str = "tests/data/medical/results"
+
     # PostgreSQL：开发环境单账号直连；生产部署时再按实现文档 §11 分权
     pg_host: str = "127.0.0.1"
     pg_port: int = 5433

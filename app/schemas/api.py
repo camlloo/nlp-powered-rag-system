@@ -45,6 +45,7 @@ class DocumentItem(BaseModel):
     org_tag_id: int | None = None  # None = 个人归属
     org_tag_name: str | None = None
     uploader_user_id: int | None = None  # 前端据此判断可否编辑归属/可见性
+    uploader_username: str | None = None  # 个人归属时前端展示归属用户名
     deleted_at: object | None = None
     created_at: object | None = None
 

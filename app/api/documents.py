@@ -27,7 +27,15 @@ from app.api.deps import PrincipalDep, SessionDep, SettingsDep, require_kb_acces
 from app.core.auth import Principal
 from app.core.config import Settings
 from app.core.errors import AppError, Conflict, Forbidden, NotFound, ValidationFailed
-from app.db.models import IngestJob, KbChunk, KbCollection, KbDocument, KbDocumentVersion, OrgTag
+from app.db.models import (
+    AppUser,
+    IngestJob,
+    KbChunk,
+    KbCollection,
+    KbDocument,
+    KbDocumentVersion,
+    OrgTag,
+)
 from app.db.spaces import get_or_create_main_space
 from app.db.upload_guard import upload_idempotency, upload_object_guard
 from app.parsers.base import check_size, detect_format
@@ -60,8 +68,10 @@ def _lock_live_kb(session: Session, kb_id: int) -> None:
         raise Conflict("知识库不存在或已删除，无法继续上传")
 
 
-def _replacement_document_ids(session: Session, uri: str) -> list[int]:
-    """以固定顺序锁定所有共用同 URI 的文档，避免并发整库替换死锁。"""
+def _replacement_document_ids(session: Session, uri: str, kb_id: int) -> list[int]:
+    """目标知识库内，按固定顺序锁定共用该 URI 的活文档（同库同名替换语义）。
+
+    跨库共用 URI 的情况已在上传入口以 409 fail-closed 拒绝，此处不触碰其他库。"""
     return list(
         session.execute(
             select(KbDocument.id)
@@ -72,11 +82,32 @@ def _replacement_document_ids(session: Session, uri: str) -> list[int]:
                     )
                 ),
                 KbDocument.deleted_at.is_(None),
+                KbDocument.kb_id == kb_id,
             )
             .order_by(KbDocument.id)
             .with_for_update()
         ).scalars().all()
     )
+
+
+def _foreign_kb_ids_using_uri(session: Session, uri: str, kb_id: int) -> list[int]:
+    """仍持有该 URI 活文档的其他知识库 ID（升序）。
+
+    对象 key 以（日期, 用户, 文件名）为粒度：同用户同日向不同库上传同名文件会
+    指向同一 URI。若放任替换，会静默软删其他库的文档（历史数据丢失缺陷），
+    因此上传入口对此 fail closed。"""
+    return sorted(set(session.execute(
+        select(KbDocument.kb_id)
+        .where(
+            KbDocument.id.in_(
+                select(KbDocumentVersion.document_id).where(
+                    KbDocumentVersion.storage_uri == uri
+                )
+            ),
+            KbDocument.deleted_at.is_(None),
+            KbDocument.kb_id != kb_id,
+        )
+    ).scalars().all()))
 
 
 def create_document_record(
@@ -191,15 +222,21 @@ def create_document_record(
             raise Conflict("同名对象正在处理或结果不确定，需人工核查")
         # 持住屏障后复核目标知识库：删除端点同样原子更新，二者串行。
         _lock_live_kb(session, kb_id)
+        # 同 URI 若被其他知识库的活文档引用：fail closed 拒绝，不写屏障、不动对象、
+        # 不软删别的库文档（跨库同名同日上传共享 URI 的历史数据丢失缺陷）。
+        foreign = _foreign_kb_ids_using_uri(session, uri, kb_id)
+        if foreign:
+            raise Conflict(
+                f"同名对象已被其他知识库 {foreign} 的文档引用：请改用不同文件名，或先删除对应文档"
+            )
         session.execute(
             update(upload_object_guard).where(
                 upload_object_guard.c.uri_hash == uri_hash
             ).values(state="writing", token=token)
         )
 
-        # 不仅查当前版本，也不按知识库过滤：任何旧版本共用此 key 都会被改写。
-        # 固定 ID 顺序加锁，跨 key 并发替换不会形成互锁等待。
-        stale_ids = _replacement_document_ids(session, uri)
+        # 同库内替换语义保留：共用此 URI 的本库旧版本会被改写（固定 ID 顺序加锁）。
+        stale_ids = _replacement_document_ids(session, uri, kb_id)
         affected = []
         if stale_ids:
             affected = session.execute(
@@ -444,13 +481,14 @@ def list_documents(
         select(func.count()).select_from(KbDocument).where(*filters)
     ).scalar_one()
     rows = session.execute(
-        select(KbDocument, KbDocumentVersion, OrgTag.name)
+        select(KbDocument, KbDocumentVersion, OrgTag.name, AppUser.username)
         .join(
             KbDocumentVersion,
             (KbDocumentVersion.document_id == KbDocument.id)
             & (KbDocumentVersion.version_no == KbDocument.current_version_no),
         )
         .outerjoin(OrgTag, OrgTag.id == KbDocument.org_tag_id)
+        .outerjoin(AppUser, AppUser.id == KbDocument.uploader_user_id)
         .where(*filters)
         .order_by(KbDocument.id)
         .offset(offset)
@@ -466,10 +504,11 @@ def list_documents(
             org_tag_id=document.org_tag_id,
             org_tag_name=org_name,
             uploader_user_id=document.uploader_user_id,
+            uploader_username=uploader_username,
             deleted_at=document.deleted_at,
             created_at=version.created_at,
         )
-        for document, version, org_name in rows
+        for document, version, org_name, uploader_username in rows
     ]
     return GlobalDocumentListResponse(total=total, items=items)
 
@@ -489,7 +528,8 @@ def _load_document_row(session: Session, document_id: int):
 
 
 def _document_item(
-    document: KbDocument, version: KbDocumentVersion, org_name: str | None
+    document: KbDocument, version: KbDocumentVersion, org_name: str | None,
+    uploader_username: str | None = None,
 ) -> DocumentItem:
     return DocumentItem(
         document_id=document.id,
@@ -500,6 +540,7 @@ def _document_item(
         org_tag_id=document.org_tag_id,
         org_tag_name=org_name,
         uploader_user_id=document.uploader_user_id,
+        uploader_username=uploader_username,
         deleted_at=document.deleted_at,
         created_at=version.created_at,
     )
@@ -552,4 +593,7 @@ def update_document(
 
     row = _load_document_row(session, document_id)
     assert row is not None
-    return _document_item(*row)
+    uploader_username = session.scalar(
+        select(AppUser.username).where(AppUser.id == document.uploader_user_id)
+    )
+    return _document_item(*row, uploader_username)
